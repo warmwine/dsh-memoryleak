@@ -41,14 +41,21 @@ function createFakeSettings() {
 function createFakeHost() {
   const settings = createFakeSettings()
   const routes = []
+  const routeKeys = new Set()
   const commands = []
   const effects = []
   const ctx = {
     settings,
     webServer: {
+      // 与真实 dsh-host-webserver 一致：exact/prefix 的去重键是 (kind, path)，
+      // 不含 HTTP 方法 —— 同路径多方法必须在单个 handler 内分发。
       register(route) {
+        const key = `${route.kind} ${route.path}`
+        if (routeKeys.has(key)) throw new Error(`webserver: duplicate ${route.kind} route "${route.path}"`)
+        routeKeys.add(key)
         routes.push(route)
         return () => {
+          routeKeys.delete(key)
           const index = routes.indexOf(route)
           if (index !== -1) routes.splice(index, 1)
         }
@@ -132,10 +139,9 @@ describe('宿主插件装配（apply）', () => {
     expect(inject).toEqual(['webServer', 'commands', 'settings'])
   })
 
-  it('注册 4 条 API 路由与 1 条 /ml 命令', () => {
+  it('注册 3 条 API 路由（GET/POST /settings 合一）与 1 条 /ml 命令', () => {
     expect(host.routes.map((route) => `${route.kind} ${route.path}`).sort()).toEqual([
       'exact /api/memoryleak/formats',
-      'exact /api/memoryleak/settings',
       'exact /api/memoryleak/settings',
       'exact /api/memoryleak/settings/reset',
     ])
@@ -145,7 +151,7 @@ describe('宿主插件装配（apply）', () => {
   })
 
   it('GET /settings 返回默认段与修订号', async () => {
-    const get = host.routes.find((route) => route.path === '/api/memoryleak/settings' && route.handler.length >= 0)
+    const get = host.routes.find((route) => route.path === '/api/memoryleak/settings')
     const result = await invokeRoute(get, 'GET')
     expect(result.status).toBe(200)
     expect(result.body.ok).toBe(true)
@@ -156,7 +162,7 @@ describe('宿主插件装配（apply）', () => {
   })
 
   it('POST /settings 整段替换并递增修订号', async () => {
-    const post = host.routes.filter((route) => route.path === '/api/memoryleak/settings')[1]
+    const post = host.routes.find((route) => route.path === '/api/memoryleak/settings')
     const result = await invokeRoute(post, 'POST', {
       section: { extensions: ['md'], excludeDirs: ['node_modules'], maxFiles: 10, maxFileBytes: 65536, maxItems: 5, defaultStatus: 'all' },
     })
@@ -167,7 +173,7 @@ describe('宿主插件装配（apply）', () => {
   })
 
   it('POST /settings 非法段返回 400 与人话错误', async () => {
-    const post = host.routes.filter((route) => route.path === '/api/memoryleak/settings')[1]
+    const post = host.routes.find((route) => route.path === '/api/memoryleak/settings')
     const result = await invokeRoute(post, 'POST', { section: { defaultStatus: 'ANY' } })
     expect(result.status).toBe(400)
     expect(result.body.ok).toBe(false)
@@ -192,6 +198,11 @@ describe('宿主插件装配（apply）', () => {
     const result = await invokeRoute(formats, 'POST', {})
     expect(result.status).toBe(405)
     expect(result.body.error).toBe('method-not-allowed')
+
+    const settings = host.routes.find((route) => route.path === '/api/memoryleak/settings')
+    const settingsResult = await invokeRoute(settings, 'PUT', {})
+    expect(settingsResult.status).toBe(405)
+    expect(settingsResult.body.error).toBe('method-not-allowed')
   })
 
   it('/ml todo list all 端到端：扫描真实临时工作区', async () => {
@@ -269,7 +280,7 @@ describe('宿主插件装配（apply）', () => {
     for (const dispose of host.effects) dispose()
     expect(host.routes).toHaveLength(0)
     expect(host.commands).toHaveLength(0)
-    expect(routesBefore).toBe(4)
+    expect(routesBefore).toBe(3)
     expect(commandsBefore).toBe(1)
   })
 })

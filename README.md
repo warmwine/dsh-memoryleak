@@ -1,20 +1,23 @@
-# dsh-memoryleak —— DSH 记事本插件
+# dsh-memoryleak —— DSH 记忆泄露插件
 
-> AI 时代的记事本：数据模型优先、格式可扩展、问题尽早暴露。
+> memoryleak，取「内存泄露」同名梗：把记忆外化成文件，泄露给未来的自己。
+> 数据模型优先、格式可扩展、问题尽早暴露。
 
 [English](README.md) · 开发要则见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 
 ## 功能
 
-- **设置窗口**：GUI 设置面板新增「记事本」分区（与「字体」设置页同款位置），
+- **设置窗口**：GUI 设置面板新增「记忆泄露」分区（与「字体」设置页同款位置），
   可配置扫描扩展名、排除目录、文件/条目上限与 `/ml todo` 默认过滤词，持久化在
-  `~/.dsh/settings.yaml` 的 `notes:` 段，支持多窗口乐观并发。
+  `~/.dsh/settings.yaml` 的 `memoryleak:` 段，支持多窗口乐观并发。
 - **`/ml todo list` 命令**：扫描当前工作区 Markdown 文件中的待办
   （`- [ ] 未完成` / `- [x] 已完成`），在命令卡片中按文件分组返回。
   - `/ml todo list` —— 按默认过滤（可在设置中改为 open/done/all）
   - `/ml todo list all|open|done` —— 指定状态
   - `/ml todo list deploy` —— 关键词过滤（大小写不敏感）
   - 围栏代码块内的任务行不计入；`node_modules`、`.git` 等目录默认排除。
+- `/ml` 是命令家族前缀：todo 只是第一个成员，note / plan 等子命令在文法上
+  已预留同层扩展位（见 `src/core/command.js`）。
 
 ## 安装（本机 DSH）
 

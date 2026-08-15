@@ -77,57 +77,65 @@ function revisionOf(ctx) {
  * @param {object} deps.registry TodoFormatRegistry
  */
 export function makeMemoryleakRoutes({ ctx, scope, registry }) {
-  /** GET /settings */
-  const getSettings = {
-    kind: 'exact',
-    path: `${MEMORYLEAK_API_PREFIX}/settings`,
-    handler: (req, res) => {
-      if (!requireMethod(req, res, 'GET')) return
-      try {
-        json(res, 200, {
-          ok: true,
-          section: resolveMemoryleakSettings(scope.get()),
-          revision: revisionOf(ctx),
-          defaults: MEMORYLEAK_SETTINGS_DEFAULTS,
-        })
-      } catch (error) {
-        json(res, 500, { ok: false, error: errorMessage(error) })
-      }
-    },
+  /** GET /settings：读当前段 + 修订号 + 默认值。 */
+  function handleGetSettings(req, res) {
+    if (!requireMethod(req, res, 'GET')) return
+    try {
+      json(res, 200, {
+        ok: true,
+        section: resolveMemoryleakSettings(scope.get()),
+        revision: revisionOf(ctx),
+        defaults: MEMORYLEAK_SETTINGS_DEFAULTS,
+      })
+    } catch (error) {
+      json(res, 500, { ok: false, error: errorMessage(error) })
+    }
   }
 
-  /** POST /settings { section, expectedRevision? } */
-  const postSettings = {
+  /** POST /settings { section, expectedRevision? }：整段替换。 */
+  function handlePostSettings(req, res) {
+    if (!requireMethod(req, res, 'POST')) return
+    readJsonBody(req)
+      .then((body) => {
+        if (body === null || typeof body !== 'object' || body === null) {
+          throw Object.assign(new Error('请求体必须是 JSON 对象'), { status: 400 })
+        }
+        const record = /** @type {Record<string, unknown>} */ (body)
+        const section = record.section
+        if (section === null || typeof section !== 'object' || Array.isArray(section)) {
+          throw Object.assign(new Error('section 必须是对象'), { status: 400 })
+        }
+        // 整段替换（本 schema 全是标量与数组，替换语义最诚实）。
+        const expected = Number.isInteger(record.expectedRevision) ? record.expectedRevision : undefined
+        return ctx.settings.replace(MEMORYLEAK_SETTINGS_NAMESPACE, section, expected).then(() => {
+          json(res, 200, { ok: true, section: resolveMemoryleakSettings(scope.get()), revision: revisionOf(ctx) })
+        })
+      })
+      .catch((error) => {
+        if (error !== null && typeof error === 'object' && error.code === 'SETTINGS_CONFLICT') {
+          json(res, 409, { ok: false, error: '设置已被其他窗口修改，请刷新后重试', revision: revisionOf(ctx) })
+          return
+        }
+        json(res, error !== null && typeof error === 'object' && Number.isInteger(error.status) ? error.status : 400, {
+          ok: false,
+          error: errorMessage(error),
+        })
+      })
+  }
+
+  /**
+   * /settings 路由：宿主 webServer 的去重键是 (kind, path) 不含 HTTP 方法，
+   * 同路径的 GET/POST 必须共用一个 handler，在此按方法分发。
+   */
+  const settingsRoute = {
     kind: 'exact',
     path: `${MEMORYLEAK_API_PREFIX}/settings`,
     handler: (req, res) => {
-      if (!requireMethod(req, res, 'POST')) return
-      readJsonBody(req)
-        .then((body) => {
-          if (body === null || typeof body !== 'object' || body === null) {
-            throw Object.assign(new Error('请求体必须是 JSON 对象'), { status: 400 })
-          }
-          const record = /** @type {Record<string, unknown>} */ (body)
-          const section = record.section
-          if (section === null || typeof section !== 'object' || Array.isArray(section)) {
-            throw Object.assign(new Error('section 必须是对象'), { status: 400 })
-          }
-          // 整段替换（本 schema 全是标量与数组，替换语义最诚实）。
-          const expected = Number.isInteger(record.expectedRevision) ? record.expectedRevision : undefined
-          return ctx.settings.replace(MEMORYLEAK_SETTINGS_NAMESPACE, section, expected).then(() => {
-            json(res, 200, { ok: true, section: resolveMemoryleakSettings(scope.get()), revision: revisionOf(ctx) })
-          })
-        })
-        .catch((error) => {
-          if (error !== null && typeof error === 'object' && error.code === 'SETTINGS_CONFLICT') {
-            json(res, 409, { ok: false, error: '设置已被其他窗口修改，请刷新后重试', revision: revisionOf(ctx) })
-            return
-          }
-          json(res, error !== null && typeof error === 'object' && Number.isInteger(error.status) ? error.status : 400, {
-            ok: false,
-            error: errorMessage(error),
-          })
-        })
+      if (req.method === 'POST') {
+        handlePostSettings(req, res)
+        return
+      }
+      handleGetSettings(req, res)
     },
   }
 
@@ -156,7 +164,7 @@ export function makeMemoryleakRoutes({ ctx, scope, registry }) {
     },
   }
 
-  return [getSettings, postSettings, postReset, getFormats]
+  return [settingsRoute, postReset, getFormats]
 }
 
 function errorMessage(error) {

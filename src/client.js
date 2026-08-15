@@ -1,4 +1,4 @@
-// dsh-memoryleak —— 浏览器半：设置窗口（GUI 设置面板里的「记事本」分区）。
+// dsh-memoryleak —— 浏览器半：设置窗口（GUI 设置面板里的「记忆泄露」分区）。
 //
 // 与 dsh-ui-font 的字体设置页同款模式：settings.section 槽位注册一个分区。
 // 页面通过同源 /api/memoryleak/* 读写宿主侧的 `memoryleak` 设置命名空间（持久化在
@@ -164,12 +164,12 @@ window.__ModuleLoader__.load({
 
       if (draft === null) {
         return React.createElement("div", null,
-          React.createElement("h3", { style: { margin: "4px 0 8px" } }, "记事本"),
+          React.createElement("h3", { style: { margin: "4px 0 8px" } }, "记忆泄露"),
           React.createElement("p", null, message === null ? "正在加载设置…" : message.text));
       }
 
       return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
-        React.createElement("h3", { style: { margin: "4px 0 8px" } }, "记事本 · /ml"),
+        React.createElement("h3", { style: { margin: "4px 0 8px" } }, "memoryleak · 记忆泄露"),
         row("默认过滤",
           React.createElement("select", {
             value: draft.defaultStatus,
@@ -238,9 +238,9 @@ window.__ModuleLoader__.load({
     const inject = ["slots"];
 
     function apply(ctx) {
-      // 设置窗口：GUI 设置面板中的一个「记事本」分区（与字体设置页同款槽位）。
+      // 设置窗口：GUI 设置面板中的一个「记忆泄露」分区（与字体设置页同款槽位）。
       ctx.slots.inject("settings.section", () => ctx.slots.register(
-        { name: "settings.section", id: "memoryleak", order: 96, label: "记事本" },
+        { name: "settings.section", id: "memoryleak", order: 96, label: "记忆泄露" },
         () => React.createElement(NotesSettingsPage)
       ));
     }
