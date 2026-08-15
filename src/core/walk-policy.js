@@ -2,7 +2,7 @@
  * 目录/文件的纯遍历策略：被 node 与 memory 两个 FileSource 适配器共享，
  * 保证“排除规则”在测试与生产环境语义一致（策略与适配器分离）。
  *
- * @module dsh-notes/core/walk-policy
+ * @module dsh-memoryleak/core/walk-policy
  */
 
 /** 规范化扩展名：小写、去掉前导点。空串原样返回（调用方用集合语义忽略它）。 */

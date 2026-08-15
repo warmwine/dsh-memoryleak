@@ -6,7 +6,7 @@
  * 根不可用 → 抛 TodoRootError；单文件故障 → 记入 report.errors/skipped；
  * 中止 → 抛 TodoScanAbortedError；内部不可能状态 → invariant 崩溃。
  *
- * @module dsh-notes/core/scan
+ * @module dsh-memoryleak/core/scan
  */
 import { invariant, TodoScanAbortedError } from './errors.js'
 import { materializeTodoItem } from './todo-item.js'

@@ -1,18 +1,18 @@
-// dsh-notes —— 浏览器半：设置窗口（GUI 设置面板里的「记事本」分区）。
+// dsh-memoryleak —— 浏览器半：设置窗口（GUI 设置面板里的「记事本」分区）。
 //
 // 与 dsh-ui-font 的字体设置页同款模式：settings.section 槽位注册一个分区。
-// 页面通过同源 /api/notes/* 读写宿主侧的 `notes` 设置命名空间（持久化在
+// 页面通过同源 /api/memoryleak/* 读写宿主侧的 `memoryleak` 设置命名空间（持久化在
 // ~/.dsh/settings.yaml），带乐观并发（expectedRevision / 409 重载提示）。
 // 所有异步失败都显式渲染在页面上 —— 不吞错、不静默。
 window.__ModuleLoader__.load({
-  id: "dsh-notes",
+  id: "dsh-memoryleak",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
 
     const React = require("react");
 
-    const API = "/api/notes";
+    const API = "/api/memoryleak";
     const STATUS_OPTIONS = [
       ["open", "未完成"],
       ["done", "已完成"],
@@ -169,14 +169,14 @@ window.__ModuleLoader__.load({
       }
 
       return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
-        React.createElement("h3", { style: { margin: "4px 0 8px" } }, "记事本 · /todo"),
+        React.createElement("h3", { style: { margin: "4px 0 8px" } }, "记事本 · /ml"),
         row("默认过滤",
           React.createElement("select", {
             value: draft.defaultStatus,
             onChange: (event) => update({ defaultStatus: event.target.value }),
             style: { minWidth: 140 },
           }, STATUS_OPTIONS.map((option) => React.createElement("option", { key: option[0], value: option[0] }, option[1]))),
-          "/todo list 未指定状态时使用的过滤"),
+          "/ml todo list 未指定状态时使用的过滤"),
         row("扫描扩展名",
           React.createElement("input", {
             value: draft.extensionsText,
@@ -240,7 +240,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       // 设置窗口：GUI 设置面板中的一个「记事本」分区（与字体设置页同款槽位）。
       ctx.slots.inject("settings.section", () => ctx.slots.register(
-        { name: "settings.section", id: "notes", order: 96, label: "记事本" },
+        { name: "settings.section", id: "memoryleak", order: 96, label: "记事本" },
         () => React.createElement(NotesSettingsPage)
       ));
     }

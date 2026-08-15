@@ -1,5 +1,5 @@
 /**
- * Typed errors and the fail-fast invariant helper for the notes core.
+ * Typed errors and the fail-fast invariant helper for the memoryleak core.
  *
  * let-it-crash 分界线（见 docs/DEVELOPMENT.md §2）：
  * - 程序员错误 / 不可能状态：通过 {@link invariant} 在最早的边界抛出，
@@ -8,7 +8,7 @@
  * - 环境故障（TodoRootError 等）：结构化上抛，由命令层转成用户可见结果，
  *   绝不静默吞掉。
  *
- * @module dsh-notes/core/errors
+ * @module dsh-memoryleak/core/errors
  */
 
 /** Base class for every error this package raises (name-stable, cause-safe). */
@@ -46,6 +46,6 @@ export class TodoScanAbortedError extends TodoError {}
  */
 export function invariant(condition, message, ErrorClass = TodoError) {
   if (condition !== true) {
-    throw new ErrorClass(`[dsh-notes] invariant violated: ${message}`)
+    throw new ErrorClass(`[dsh-memoryleak] invariant violated: ${message}`)
   }
 }

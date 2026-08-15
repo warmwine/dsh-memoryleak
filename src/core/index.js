@@ -1,7 +1,7 @@
 /**
  * 核心域的公共出口（纯函数集合，零框架依赖，可直接被测试与未来 AI 管线复用）。
  *
- * @module dsh-notes/core
+ * @module dsh-memoryleak/core
  */
 export * from './errors.js'
 export * from './todo-item.js'

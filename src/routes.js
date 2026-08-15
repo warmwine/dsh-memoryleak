@@ -1,21 +1,21 @@
 /**
- * /api/notes/* —— 浏览器半与宿主半之间的同源 JSON 桥（与 dsh-pet / dsh-ui-font
+ * /api/memoryleak/* —— 浏览器半与宿主半之间的同源 JSON 桥（与 dsh-pet / dsh-ui-font
  * 同款的 webServer 模式；RPC 域是平台注册的，插件自服务 API 走 HTTP）。
  *
- *   GET  /api/notes/settings        → { ok, section, revision, defaults }
- *   POST /api/notes/settings        → { section, expectedRevision? } 整段替换
+ *   GET  /api/memoryleak/settings        → { ok, section, revision, defaults }
+ *   POST /api/memoryleak/settings        → { section, expectedRevision? } 整段替换
  *                                      校验失败 400；版本冲突 409（乐观并发）
- *   POST /api/notes/settings/reset  → 清空用户层，回到默认
- *   GET  /api/notes/formats         → { ok, formats: [{ id, title, priority }] }
+ *   POST /api/memoryleak/settings/reset  → 清空用户层，回到默认
+ *   GET  /api/memoryleak/formats         → { ok, formats: [{ id, title, priority }] }
  *
  * 失败一律显式返回 { ok: false, error }，绝不静默。
  *
- * @module dsh-notes/routes
+ * @module dsh-memoryleak/routes
  */
-import { NOTES_SETTINGS_NAMESPACE, NOTES_SETTINGS_DEFAULTS, resolveNotesSettings } from './settings-schema.js'
+import { MEMORYLEAK_SETTINGS_NAMESPACE, MEMORYLEAK_SETTINGS_DEFAULTS, resolveMemoryleakSettings } from './settings-schema.js'
 
 /** 浏览器侧 API 前缀。 */
-export const NOTES_API_PREFIX = '/api/notes'
+export const MEMORYLEAK_API_PREFIX = '/api/memoryleak'
 
 const BODY_LIMIT = 64 * 1024
 
@@ -64,7 +64,7 @@ function readJsonBody(req) {
 
 /** 读出本命名空间当前的修订号（用于乐观并发）。 */
 function revisionOf(ctx) {
-  const descriptor = ctx.settings.describe().find((entry) => entry.ns === NOTES_SETTINGS_NAMESPACE)
+  const descriptor = ctx.settings.describe().find((entry) => entry.ns === MEMORYLEAK_SETTINGS_NAMESPACE)
   return descriptor !== undefined && Number.isInteger(descriptor.revision) ? descriptor.revision : null
 }
 
@@ -76,19 +76,19 @@ function revisionOf(ctx) {
  * @param {{ get(): unknown, update(patch: object, expectedRevision?: number): Promise<void> }} deps.scope
  * @param {object} deps.registry TodoFormatRegistry
  */
-export function makeNotesRoutes({ ctx, scope, registry }) {
+export function makeMemoryleakRoutes({ ctx, scope, registry }) {
   /** GET /settings */
   const getSettings = {
     kind: 'exact',
-    path: `${NOTES_API_PREFIX}/settings`,
+    path: `${MEMORYLEAK_API_PREFIX}/settings`,
     handler: (req, res) => {
       if (!requireMethod(req, res, 'GET')) return
       try {
         json(res, 200, {
           ok: true,
-          section: resolveNotesSettings(scope.get()),
+          section: resolveMemoryleakSettings(scope.get()),
           revision: revisionOf(ctx),
-          defaults: NOTES_SETTINGS_DEFAULTS,
+          defaults: MEMORYLEAK_SETTINGS_DEFAULTS,
         })
       } catch (error) {
         json(res, 500, { ok: false, error: errorMessage(error) })
@@ -99,7 +99,7 @@ export function makeNotesRoutes({ ctx, scope, registry }) {
   /** POST /settings { section, expectedRevision? } */
   const postSettings = {
     kind: 'exact',
-    path: `${NOTES_API_PREFIX}/settings`,
+    path: `${MEMORYLEAK_API_PREFIX}/settings`,
     handler: (req, res) => {
       if (!requireMethod(req, res, 'POST')) return
       readJsonBody(req)
@@ -114,8 +114,8 @@ export function makeNotesRoutes({ ctx, scope, registry }) {
           }
           // 整段替换（本 schema 全是标量与数组，替换语义最诚实）。
           const expected = Number.isInteger(record.expectedRevision) ? record.expectedRevision : undefined
-          return ctx.settings.replace(NOTES_SETTINGS_NAMESPACE, section, expected).then(() => {
-            json(res, 200, { ok: true, section: resolveNotesSettings(scope.get()), revision: revisionOf(ctx) })
+          return ctx.settings.replace(MEMORYLEAK_SETTINGS_NAMESPACE, section, expected).then(() => {
+            json(res, 200, { ok: true, section: resolveMemoryleakSettings(scope.get()), revision: revisionOf(ctx) })
           })
         })
         .catch((error) => {
@@ -134,13 +134,13 @@ export function makeNotesRoutes({ ctx, scope, registry }) {
   /** POST /settings/reset */
   const postReset = {
     kind: 'exact',
-    path: `${NOTES_API_PREFIX}/settings/reset`,
+    path: `${MEMORYLEAK_API_PREFIX}/settings/reset`,
     handler: (req, res) => {
       if (!requireMethod(req, res, 'POST')) return
       ctx.settings
-        .replace(NOTES_SETTINGS_NAMESPACE, {})
+        .replace(MEMORYLEAK_SETTINGS_NAMESPACE, {})
         .then(() => {
-          json(res, 200, { ok: true, section: resolveNotesSettings(scope.get()), revision: revisionOf(ctx) })
+          json(res, 200, { ok: true, section: resolveMemoryleakSettings(scope.get()), revision: revisionOf(ctx) })
         })
         .catch((error) => json(res, 400, { ok: false, error: errorMessage(error) }))
     },
@@ -149,7 +149,7 @@ export function makeNotesRoutes({ ctx, scope, registry }) {
   /** GET /formats */
   const getFormats = {
     kind: 'exact',
-    path: `${NOTES_API_PREFIX}/formats`,
+    path: `${MEMORYLEAK_API_PREFIX}/formats`,
     handler: (req, res) => {
       if (!requireMethod(req, res, 'GET')) return
       json(res, 200, { ok: true, formats: registry.descriptors })

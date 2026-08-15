@@ -1,38 +1,38 @@
 /**
- * dsh-notes —— 宿主半（Cordis 插件）。
+ * dsh-memoryleak —— 宿主半（Cordis 插件）。
  *
  * 职责（组装根）：
  *   1. 装配核心引擎：Registry（内置 markdown-checkbox Strategy）+ NodeFileSource
- *   2. 注册 `notes` 设置命名空间（持久化到 ~/.dsh/settings.yaml）
- *   3. 暴露 /api/notes/* JSON 路由（设置窗口的读写桥）
- *   4. 注册 /todo 命令（dsh-commands 人类命令面）
+ *   2. 注册 `memoryleak` 设置命名空间（持久化到 ~/.dsh/settings.yaml）
+ *   3. 暴露 /api/memoryleak/* JSON 路由（设置窗口的读写桥）
+ *   4. 注册 /ml todo 命令（dsh-commands 人类命令面）
  *
  * 所有副作用挂在自身 Fiber 上：settings 注册随插件停用自动回收，路由与命令
  * 用 ctx.effect 显式回收。故障分级遵循 docs/DEVELOPMENT.md §2：用法/环境错
  * 误转成命令错误结果；未知异常上抛给 dsh-commands 记为 command/done: error
  * （let it crash 的可见出口）。
  *
- * @module dsh-notes
+ * @module dsh-memoryleak
  */
 import { createDefaultRegistry } from './core/registry.js'
 import { createScanLimits, createTodoScanner } from './core/scan.js'
 import { createNodeFileSource } from './adapters/node-file-source.js'
-import { makeNotesRoutes } from './routes.js'
+import { makeMemoryleakRoutes } from './routes.js'
 import {
-  NOTES_SETTINGS_NAMESPACE,
-  NOTES_SETTINGS_DEFAULTS,
-  notesSettingsSchema,
-  resolveNotesSettings,
+  MEMORYLEAK_SETTINGS_NAMESPACE,
+  MEMORYLEAK_SETTINGS_DEFAULTS,
+  memoryleakSettingsSchema,
+  resolveMemoryleakSettings,
 } from './settings-schema.js'
-import { parseTodoArgs } from './core/command.js'
+import { parseMlArgs } from './core/command.js'
 import { createTodoQuery } from './core/filter.js'
 import { renderTodoText } from './core/render.js'
 import { TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
 
 /** 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。 */
-export const name = 'notes'
+export const name = 'memoryleak'
 
-/** 硬依赖：webServer（API 路由）、commands（/todo）、settings（持久化设置）。 */
+/** 硬依赖：webServer（API 路由）、commands（/ml todo）、settings（持久化设置）。 */
 export const inject = ['webServer', 'commands', 'settings']
 
 export { createDefaultRegistry, createTodoScanner, createScanLimits }
@@ -46,27 +46,27 @@ export function apply(ctx) {
   const fileSource = createNodeFileSource()
 
   // ---- 设置命名空间（非法的存储段会让本次注册抛错 → 插件加载失败；带病运行不如早崩）----
-  const scope = ctx.settings.register(NOTES_SETTINGS_NAMESPACE, notesSettingsSchema, { base: NOTES_SETTINGS_DEFAULTS })
+  const scope = ctx.settings.register(MEMORYLEAK_SETTINGS_NAMESPACE, memoryleakSettingsSchema, { base: MEMORYLEAK_SETTINGS_DEFAULTS })
 
-  // ---- /api/notes/* 路由 ----
-  const routes = makeNotesRoutes({ ctx, scope, registry })
+  // ---- /api/memoryleak/* 路由 ----
+  const routes = makeMemoryleakRoutes({ ctx, scope, registry })
   ctx.effect(() => {
     const disposers = routes.map((route) => ctx.webServer.register(route))
     return () => {
       for (const dispose of disposers) dispose()
     }
-  }, 'notes: /api/notes routes')
+  }, 'memoryleak: /api/memoryleak routes')
 
-  // ---- /todo 命令（单一注册点）----
+  // ---- /ml 命令（单一注册点；子命令文法见 core/command.js）----
   ctx.effect(
     () =>
       ctx.commands.register({
-        name: 'todo',
-        description: '记事本：列出当前工作区 Markdown 里的待办（/todo list [all|open|done] [关键词]）',
-        input: { hint: 'list [all|open|done] [关键词]' },
+        name: 'ml',
+        description: '记事本：列出当前工作区 Markdown 里的待办（/ml todo list [all|open|done] [关键词]）',
+        input: { hint: 'todo list [all|open|done] [关键词]' },
         handler: wrappedHandler,
       }),
-    'notes: /todo command',
+    'memoryleak: /ml command',
   )
 
   /**
@@ -80,8 +80,8 @@ export function apply(ctx) {
     if (typeof cwd !== 'string' || cwd === '') {
       return { kind: 'error', text: '当前会话没有绑定工作区目录，无法扫描待办。' }
     }
-    const parsed = parseTodoArgs(rawInput)
-    const settings = resolveNotesSettings(scope.get())
+    const parsed = parseMlArgs(rawInput)
+    const settings = resolveMemoryleakSettings(scope.get())
     const query = createTodoQuery({ status: parsed.status ?? settings.defaultStatus, text: parsed.text, limit: null })
     const scanner = createTodoScanner({ registry, fileSource, limits: createScanLimits(settings) })
     const report = await scanner.scan(cwd, settings, signal)

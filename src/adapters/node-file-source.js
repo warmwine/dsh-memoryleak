@@ -7,7 +7,7 @@
  *   - 符号链接一律跳过（防环、防逃出工作区；文档化取舍）
  *   - 数量/深度双重上限防失控目录树
  *
- * @module dsh-notes/adapters/node-file-source
+ * @module dsh-memoryleak/adapters/node-file-source
  */
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'

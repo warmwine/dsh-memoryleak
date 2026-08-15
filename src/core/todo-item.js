@@ -4,7 +4,7 @@
  * 构造即校验、构造即冻结（Value Object 模式）。任何把畸形数据塞进管道的
  * 尝试都在这里崩溃，而不是在渲染层变成一行乱码。
  *
- * @module dsh-notes/core/todo-item
+ * @module dsh-memoryleak/core/todo-item
  */
 import { invariant, TodoError } from './errors.js'
 

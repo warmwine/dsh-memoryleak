@@ -7,7 +7,7 @@
  *   字典序稳定排序 —— 结果可复现。
  * - register 返回注销函数：副作用可逆，宿主插件停用/更新时逐项回收。
  *
- * @module dsh-notes/core/registry
+ * @module dsh-memoryleak/core/registry
  */
 import { invariant, TodoFormatContractError } from './errors.js'
 import { markdownCheckboxFormat } from './formats/markdown-checkbox.js'

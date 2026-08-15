@@ -1,7 +1,7 @@
 /**
  * 宿主插件集成测试：以伪 ctx（settings / webServer / commands）装配真实
- * apply()，验证路由、命令与设置命名空间的端到端行为 —— 不起浏览器、不碰
- * 真实宿主进程。
+ * apply()，验证路由、/ml 命令与设置命名空间的端到端行为 —— 不起浏览器、
+ * 不碰真实宿主进程。
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
@@ -106,7 +106,7 @@ async function invokeRoute(route, method, payload) {
 let workspace
 
 beforeAll(async () => {
-  workspace = await mkdtemp(join(tmpdir(), 'dsh-notes-ws-'))
+  workspace = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-ws-'))
   await writeFile(join(workspace, 'README.md'), '# t\n- [ ] alpha\n- [x] beta\n')
   await mkdir(join(workspace, 'docs'), { recursive: true })
   await writeFile(join(workspace, 'docs', 'plan.md'), '- [ ] gamma deploy\n')
@@ -124,28 +124,28 @@ describe('宿主插件装配（apply）', () => {
 
   beforeAll(() => {
     apply(host.ctx)
-    command = host.commands.find((definition) => definition.name === 'todo')
+    command = host.commands.find((definition) => definition.name === 'ml')
   })
 
   it('声明稳定的插件名与硬依赖', () => {
-    expect(name).toBe('notes')
+    expect(name).toBe('memoryleak')
     expect(inject).toEqual(['webServer', 'commands', 'settings'])
   })
 
-  it('注册 4 条 API 路由与 1 条命令', () => {
+  it('注册 4 条 API 路由与 1 条 /ml 命令', () => {
     expect(host.routes.map((route) => `${route.kind} ${route.path}`).sort()).toEqual([
-      'exact /api/notes/formats',
-      'exact /api/notes/settings',
-      'exact /api/notes/settings',
-      'exact /api/notes/settings/reset',
+      'exact /api/memoryleak/formats',
+      'exact /api/memoryleak/settings',
+      'exact /api/memoryleak/settings',
+      'exact /api/memoryleak/settings/reset',
     ])
     expect(command).toBeDefined()
-    expect(command.description).toContain('/todo')
-    expect(command.input.hint).toContain('list')
+    expect(command.description).toContain('/ml todo list')
+    expect(command.input.hint).toBe('todo list [all|open|done] [关键词]')
   })
 
   it('GET /settings 返回默认段与修订号', async () => {
-    const get = host.routes.find((route) => route.path === '/api/notes/settings' && route.handler.length >= 0)
+    const get = host.routes.find((route) => route.path === '/api/memoryleak/settings' && route.handler.length >= 0)
     const result = await invokeRoute(get, 'GET')
     expect(result.status).toBe(200)
     expect(result.body.ok).toBe(true)
@@ -156,7 +156,7 @@ describe('宿主插件装配（apply）', () => {
   })
 
   it('POST /settings 整段替换并递增修订号', async () => {
-    const post = host.routes.filter((route) => route.path === '/api/notes/settings')[1]
+    const post = host.routes.filter((route) => route.path === '/api/memoryleak/settings')[1]
     const result = await invokeRoute(post, 'POST', {
       section: { extensions: ['md'], excludeDirs: ['node_modules'], maxFiles: 10, maxFileBytes: 65536, maxItems: 5, defaultStatus: 'all' },
     })
@@ -167,7 +167,7 @@ describe('宿主插件装配（apply）', () => {
   })
 
   it('POST /settings 非法段返回 400 与人话错误', async () => {
-    const post = host.routes.filter((route) => route.path === '/api/notes/settings')[1]
+    const post = host.routes.filter((route) => route.path === '/api/memoryleak/settings')[1]
     const result = await invokeRoute(post, 'POST', { section: { defaultStatus: 'ANY' } })
     expect(result.status).toBe(400)
     expect(result.body.ok).toBe(false)
@@ -175,29 +175,29 @@ describe('宿主插件装配（apply）', () => {
   })
 
   it('POST /settings/reset 清空用户层', async () => {
-    const reset = host.routes.find((route) => route.path === '/api/notes/settings/reset')
+    const reset = host.routes.find((route) => route.path === '/api/memoryleak/settings/reset')
     const result = await invokeRoute(reset, 'POST', {})
     expect(result.status).toBe(200)
     expect(result.body.section.defaultStatus).toBe('open')
   })
 
   it('GET /formats 返回已注册策略', async () => {
-    const formats = host.routes.find((route) => route.path === '/api/notes/formats')
+    const formats = host.routes.find((route) => route.path === '/api/memoryleak/formats')
     const result = await invokeRoute(formats, 'GET')
     expect(result.body.formats).toEqual([{ id: 'markdown-checkbox', title: expect.any(String), priority: 100 }])
   })
 
   it('405 方法错误', async () => {
-    const formats = host.routes.find((route) => route.path === '/api/notes/formats')
+    const formats = host.routes.find((route) => route.path === '/api/memoryleak/formats')
     const result = await invokeRoute(formats, 'POST', {})
     expect(result.status).toBe(405)
     expect(result.body.error).toBe('method-not-allowed')
   })
 
-  it('/todo list all 端到端：扫描真实临时工作区', async () => {
+  it('/ml todo list all 端到端：扫描真实临时工作区', async () => {
     const result = await command.handler({
       agent: { session: { header: { cwd: workspace } } },
-      rawInput: ' list all',
+      rawInput: ' todo list all',
       signal: new AbortController().signal,
     })
     expect(result.kind).toBe('success')
@@ -208,10 +208,21 @@ describe('宿主插件装配（apply）', () => {
     expect(result.text).not.toContain('hidden')
   })
 
-  it('/todo list open deploy 关键词过滤生效（默认状态来自已保存设置）', async () => {
+  it('/ml todo 省略操作默认 list（默认状态来自设置）', async () => {
     const result = await command.handler({
       agent: { session: { header: { cwd: workspace } } },
-      rawInput: 'list deploy',
+      rawInput: 'todo',
+      signal: new AbortController().signal,
+    })
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('[ ] alpha')
+    expect(result.text).not.toContain('[x] beta')
+  })
+
+  it('/ml todo list deploy 关键词过滤生效', async () => {
+    const result = await command.handler({
+      agent: { session: { header: { cwd: workspace } } },
+      rawInput: 'todo list deploy',
       signal: new AbortController().signal,
     })
     expect(result.kind).toBe('success')
@@ -222,14 +233,23 @@ describe('宿主插件装配（apply）', () => {
   it('用法错误返回 kind:error 而非抛出', async () => {
     const result = await command.handler({
       agent: { session: { header: { cwd: workspace } } },
-      rawInput: 'create x',
+      rawInput: 'note new',
       signal: new AbortController().signal,
     })
     expect(result).toEqual({ kind: 'error', text: expect.stringContaining('未知子命令') })
   })
 
+  it('未知操作返回 kind:error', async () => {
+    const result = await command.handler({
+      agent: { session: { header: { cwd: workspace } } },
+      rawInput: 'todo create x',
+      signal: new AbortController().signal,
+    })
+    expect(result).toEqual({ kind: 'error', text: expect.stringContaining('未知操作') })
+  })
+
   it('会话无工作区返回明确错误', async () => {
-    const result = await command.handler({ agent: { session: { header: {} } }, rawInput: 'list', signal: new AbortController().signal })
+    const result = await command.handler({ agent: { session: { header: {} } }, rawInput: 'todo', signal: new AbortController().signal })
     expect(result.kind).toBe('error')
     expect(result.text).toContain('工作区')
   })
@@ -237,7 +257,7 @@ describe('宿主插件装配（apply）', () => {
   it('工作区目录消失返回环境错误（不崩溃）', async () => {
     const result = await command.handler({
       agent: { session: { header: { cwd: join(workspace, 'nope') } } },
-      rawInput: 'list',
+      rawInput: 'todo',
       signal: new AbortController().signal,
     })
     expect(result).toEqual({ kind: 'error', text: expect.stringContaining('工作区目录不可用') })

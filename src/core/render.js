@@ -1,10 +1,10 @@
 /**
  * 渲染器：ScanReport + TodoQuery → 展示文本 / 结构化 JSON。
  *
- * 文本版服务于 /todo list 的命令卡片（纯文本 <pre>）；JSON 版是为 AI 消费
+ * 文本版服务于 /ml todo list 的命令卡片（纯文本 <pre>）；JSON 版是为 AI 消费
  * 预留的稳定契约（V1 即实现并测试，未来 AI 过滤直接复用）。
  *
- * @module dsh-notes/core/render
+ * @module dsh-memoryleak/core/render
  */
 import { invariant } from './errors.js'
 import { applyTodoQuery, createTodoQuery } from './filter.js'

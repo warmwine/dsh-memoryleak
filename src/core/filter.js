@@ -5,7 +5,7 @@
  * 份数据（action/status/text/limit），其次才是由它编译出的谓词。未来 AI 的
  * 结构化输入只要能产出同形数据，就免费获得全部过滤与渲染管线。
  *
- * @module dsh-notes/core/filter
+ * @module dsh-memoryleak/core/filter
  */
 import { invariant, TodoError } from './errors.js'
 

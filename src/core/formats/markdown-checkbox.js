@@ -10,7 +10,7 @@
  * 未来：AI 生成的特定格式（自定义围栏、元数据块……）实现同一 Strategy
  * 接口注册进 Registry 即可，扫描器一行不改（开闭原则）。
  *
- * @module dsh-notes/core/formats/markdown-checkbox
+ * @module dsh-memoryleak/core/formats/markdown-checkbox
  */
 
 /** 匹配一行 Markdown 任务列表项。 */

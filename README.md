@@ -1,4 +1,4 @@
-# dsh-notes —— DSH 记事本插件
+# dsh-memoryleak —— DSH 记事本插件
 
 > AI 时代的记事本：数据模型优先、格式可扩展、问题尽早暴露。
 
@@ -7,20 +7,20 @@
 ## 功能
 
 - **设置窗口**：GUI 设置面板新增「记事本」分区（与「字体」设置页同款位置），
-  可配置扫描扩展名、排除目录、文件/条目上限与 `/todo` 默认过滤词，持久化在
+  可配置扫描扩展名、排除目录、文件/条目上限与 `/ml todo` 默认过滤词，持久化在
   `~/.dsh/settings.yaml` 的 `notes:` 段，支持多窗口乐观并发。
-- **`/todo list` 命令**：扫描当前工作区 Markdown 文件中的待办
+- **`/ml todo list` 命令**：扫描当前工作区 Markdown 文件中的待办
   （`- [ ] 未完成` / `- [x] 已完成`），在命令卡片中按文件分组返回。
-  - `/todo list` —— 按默认过滤（可在设置中改为 open/done/all）
-  - `/todo list all|open|done` —— 指定状态
-  - `/todo list deploy` —— 关键词过滤（大小写不敏感）
+  - `/ml todo list` —— 按默认过滤（可在设置中改为 open/done/all）
+  - `/ml todo list all|open|done` —— 指定状态
+  - `/ml todo list deploy` —— 关键词过滤（大小写不敏感）
   - 围栏代码块内的任务行不计入；`node_modules`、`.git` 等目录默认排除。
 
 ## 安装（本机 DSH）
 
 ```bash
 dsh plugin --profile web add link:<本仓库路径>
-# 重启 dsh web 后生效；卸载：dsh plugin --profile web remove dsh-notes
+# 重启 dsh web 后生效；卸载：dsh plugin --profile web remove dsh-memoryleak
 ```
 
 ## 架构一览
@@ -34,7 +34,7 @@ src/core/      纯域（零依赖，vitest 直测）
   scan.js        扫描器：Registry + FileSource → 冻结的 ScanReport
   render.js      文本渲染（命令卡片）+ JSON 渲染（AI 预留契约）
 src/adapters/  node（真实 fs）/ memory（测试·预览）双适配器
-src/index.js   宿主半：/todo 命令 · notes 设置命名空间 · /api/notes/* 路由
+src/index.js   宿主半：/ml todo 命令 · notes 设置命名空间 · /api/memoryleak/* 路由
 src/client.js  浏览器半：设置窗口（settings.section 槽位）
 ```
 

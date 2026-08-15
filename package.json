@@ -1,7 +1,7 @@
 {
-  "name": "dsh-notes",
-  "version": "0.1.0",
-  "description": "DSH 记事本插件：AI 时代的待办与笔记。V1 提供设置窗口与 /todo list 命令——扫描当前工作区 Markdown 中的待办（- [ ] / - [x]），格式引擎可扩展，为 AI 生成/过滤特定格式预留查询模型。",
+  "name": "dsh-memoryleak",
+  "version": "0.2.0",
+  "description": "DSH 记事本插件：AI 时代的待办与笔记。V1 提供设置窗口与 /ml todo list 命令——扫描当前工作区 Markdown 中的待办（- [ ] / - [x]），格式引擎可扩展，为 AI 生成/过滤特定格式预留查询模型。",
   "type": "module",
   "main": "src/index.js",
   "exports": {
@@ -44,7 +44,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/example/dsh-notes.git"
+    "url": "git+https://github.com/example/dsh-memoryleak.git"
   },
   "license": "MIT"
 }

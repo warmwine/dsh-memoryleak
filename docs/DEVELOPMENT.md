@@ -1,4 +1,4 @@
-# dsh-notes 开发要则（DEVELOPMENT.md）
+# dsh-memoryleak 开发要则（DEVELOPMENT.md）
 
 本仓库是 DSH（DeepSeek Harness）的「记事本」插件：面向 AI 时代的待办与笔记。
 本文是所有贡献者必须遵守的开发宪法 —— 先读这里，再动代码。
@@ -25,7 +25,7 @@
 | 类别 | 例子 | 处理方式 |
 | --- | --- | --- |
 | **程序员错误 / 不可能状态** | 重复注册格式 id、畸形 Strategy 契约、值对象字段非法、限额越界 | `invariant()` / 专用错误在**装配期或最早边界抛出**，让进程/插件加载失败。禁止 try-catch 掩盖。 |
-| **人类用法错误** | `/todo create x`、非法过滤词 | `TodoUsageError`，命令层转成 `{ kind: 'error', text }` 给用户看，不崩溃。 |
+| **人类用法错误** | `/ml note new`（未知子命令）、非法过滤词 | `TodoUsageError`，命令层转成 `{ kind: 'error', text }` 给用户看，不崩溃。 |
 | **环境故障** | 工作区目录不存在、文件被锁、文件超大 | 明确上报：目录级 → 命令错误结果；文件级 → 记入 `report.errors` / `report.skipped` 并在渲染尾部展示，**其余文件继续**（故障隔离）。 |
 | **协作取消** | 用户中止命令 | `TodoScanAbortedError`，在文件之间检查 signal。 |
 
@@ -44,12 +44,12 @@ src/
 │   ├── walk-policy.js       共享遍历策略（两个适配器同一语义）
 │   ├── scan.js              扫描器：组合 Registry+FileSource，产出冻结报告
 │   ├── render.js            渲染器：文本（命令卡片）+ JSON（AI 契约）
-│   └── command.js           /todo 文法（纯函数）
+│   └── command.js           /ml todo 文法（纯函数）
 ├── adapters/                适配器（边缘）
 │   ├── node-file-source.js  真实 fs 绑定（宿主）
 │   └── memory-file-source.js 内存绑定（测试 / 未来预览）
 ├── settings-schema.js       schemastery schema + 默认值（settings.yaml 段）
-├── routes.js                /api/notes/* 同源 JSON 桥（webServer 模式）
+├── routes.js                /api/memoryleak/* 同源 JSON 桥（webServer 模式）
 ├── index.js                 宿主半：组装根（命令/设置/路由注册，全部可逆）
 └── client.js                浏览器半：settings.section 设置窗口
 ```
@@ -86,7 +86,7 @@ src/
 ## 5. 测试要则
 
 1. **测试金字塔**：core 纯函数（绝大多数）→ 适配器（真实 tmpdir / 内存树）→
-   宿主半集成（伪 ctx 端到端跑 `/todo` 与 HTTP 路由）。
+   宿主半集成（伪 ctx 端到端跑 `/ml todo` 与 HTTP 路由）。
 2. **每个 bug 一个回归测试**：修 bug 前先写能复现的失败测试。
 3. **契约测试**：`settings-schema.test.js` 校验 schema 键与默认值不漂移；
    `registry.test.js` 校验 Strategy 契约本身。
@@ -104,7 +104,7 @@ src/
 ## 7. 版本与兼容
 
 - `TodoItem` 字段、`renderTodoJson` 输出结构、settings.yaml 的 `notes:` 段、
-  `/api/notes/*` 响应体 —— 这四样是对外契约，**只加不破**。
+  `/api/memoryleak/*` 响应体 —— 这四样是对外契约，**只加不破**。
 - 破坏性变更必须升主版本号并在 README 声明迁移路径。
 - 新的待办格式 = 新 Strategy + 注册进 `createDefaultRegistry`（或由其他插件
   运行时注入），格式 id 一经发布不可复用为其他含义。
@@ -113,7 +113,7 @@ src/
 
 - **AI 生成待办**：新 `TodoFormat` Strategy 识别 AI 输出的特定 markdown 格式；
   AI 以 `renderTodoJson` 的形状消费扫描结果、以 `TodoQuery` 形状下发过滤。
-- **更多命令**：`/todo done <n>`、`/todo add <text>` —— 扩展 `parseTodoArgs`
+- **更多命令**：`/ml todo done <n>`、`/ml todo add <text>` —— 扩展 `parseMlArgs`
   的 action 枚举，处理器复用同一扫描/渲染管线。
 - **设置窗口预览**：`MemoryFileSource` + `scan()` 直接在设置页渲染示例结果。
 - **文件监听**：在适配器层加 watcher，核心域不变。

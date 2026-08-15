@@ -5,7 +5,7 @@
  * 遍历语义（扩展名、排除目录、数量上限、排序）与 node 适配器一致 —— 同一
  * 套测试可以跑在两个绑定上，保证适配器不偷改语义。
  *
- * @module dsh-notes/adapters/memory-file-source
+ * @module dsh-memoryleak/adapters/memory-file-source
  */
 import { TodoError } from '../core/errors.js'
 import { buildExtensionSet, normalizeRelativePath, shouldExcludeDir, shouldIncludeFile } from '../core/walk-policy.js'

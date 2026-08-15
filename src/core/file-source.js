@@ -13,7 +13,7 @@
  *     单目录/单文件的读取故障记入 errors 继续走（隔离故障，不上浮成全局崩溃）。
  *   read(root, path, signal?) -> string（utf-8；文件消失抛 Error）
  *
- * @module dsh-notes/core/file-source
+ * @module dsh-memoryleak/core/file-source
  */
 import { invariant } from './errors.js'
 

@@ -9,7 +9,7 @@ import { TodoRootError } from '../src/core/errors.js'
 let root
 
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), 'dsh-notes-test-'))
+  root = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-test-'))
   await writeFile(join(root, 'README.md'), '- [ ] alpha\n- [x] beta\n')
   await writeFile(join(root, 'notes.markdown'), '- [ ] gamma\n')
   await writeFile(join(root, 'plain.txt'), '- [ ] ignored\n')

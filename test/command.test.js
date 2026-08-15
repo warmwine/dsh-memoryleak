@@ -1,37 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { parseTodoArgs, TODO_USAGE } from '../src/core/command.js'
+import { parseMlArgs, ML_USAGE } from '../src/core/command.js'
 import { TodoUsageError } from '../src/core/errors.js'
 
-describe('parseTodoArgs（/todo 文法）', () => {
+describe('parseMlArgs（/ml 文法）', () => {
   it.each([
-    ['list', { action: 'list', status: null, text: null }],
-    ['  list  ', { action: 'list', status: null, text: null }],
-    ['list open', { action: 'list', status: 'open', text: null }],
-    ['list done', { action: 'list', status: 'done', text: null }],
-    ['list all', { action: 'list', status: 'all', text: null }],
-    ['list deploy', { action: 'list', status: null, text: 'deploy' }],
-    ['list all deploy api', { action: 'list', status: 'all', text: 'deploy api' }],
-    ['list deploy open', { action: 'list', status: null, text: 'deploy open' }],
+    ['todo', { family: 'todo', action: 'list', status: null, text: null }],
+    ['  todo  ', { family: 'todo', action: 'list', status: null, text: null }],
+    ['todo list', { family: 'todo', action: 'list', status: null, text: null }],
+    ['todo list open', { family: 'todo', action: 'list', status: 'open', text: null }],
+    ['todo list done', { family: 'todo', action: 'list', status: 'done', text: null }],
+    ['todo list all', { family: 'todo', action: 'list', status: 'all', text: null }],
+    ['todo list deploy', { family: 'todo', action: 'list', status: null, text: 'deploy' }],
+    ['todo list all deploy api', { family: 'todo', action: 'list', status: 'all', text: 'deploy api' }],
+    ['todo list deploy open', { family: 'todo', action: 'list', status: null, text: 'deploy open' }],
+    ['todo list ALL', { family: 'todo', action: 'list', status: null, text: 'ALL' }],
   ])('%j → %j', (input, expected) => {
-    expect(parseTodoArgs(input)).toEqual(expected)
+    expect(parseMlArgs(input)).toEqual(expected)
   })
 
   it.each([
     ['', '用法'],
     ['   ', '用法'],
-    ['create something', '未知子命令'],
-    ['LIST', '未知子命令'],
-    ['list ALL', null], // ALL 不是状态词 → 当作关键词（大小写敏感的状态词才被吃掉）
-  ])('输入 %j 抛用法错误或退化为关键词', (input, messagePart) => {
-    if (messagePart === null) {
-      expect(parseTodoArgs(input)).toEqual({ action: 'list', status: null, text: 'ALL' })
-      return
-    }
-    expect(() => parseTodoArgs(input)).toThrow(TodoUsageError)
-    expect(() => parseTodoArgs(input)).toThrow(new RegExp(messagePart))
+    ['note new', '未知子命令'],
+    ['list', '未知子命令'],
+    ['todo create something', '未知操作'],
+  ])('输入 %j 抛用法错误（%s）', (input, messagePart) => {
+    expect(() => parseMlArgs(input)).toThrow(TodoUsageError)
+    expect(() => parseMlArgs(input)).toThrow(new RegExp(messagePart))
   })
 
   it('用法文案包含完整文法', () => {
-    expect(TODO_USAGE).toBe('/todo list [all|open|done] [关键词]')
+    expect(ML_USAGE).toBe('/ml todo list [all|open|done] [关键词]')
   })
 })
