@@ -14,6 +14,7 @@
   （`- [ ] 未完成` / `- [x] 已完成`），在命令卡片中按文件分组返回。
   - 围栏代码块内的任务行不计入；`node_modules`、`.git` 等目录默认排除。
   - 全部变体见下方「命令与入口一览」表。
+
 ## 命令与入口一览
 
 | 命令 / 入口 | 作用 | token 消耗 |
@@ -23,11 +24,8 @@
 | `/ml todo list <关键词>` | 同上，按关键词过滤（大小写不敏感，可与状态词组合） | **0** |
 | `/ml todo` | 省略操作默认 `list`，等价 `/ml todo list` | **0** |
 | 设置窗口「记忆泄露」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词（`/api/memoryleak/*` HTTP 路由） | **0** |
-| 让 AI「帮我列待办」（对话方式） | 模型调 `glob`/`grep`/`read` 等通用工具扫描，结果进上下文 | **每次工具调用都消耗**（对比项，非本插件路径） |
 
-> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。未来 AI 生成/过滤待办的接缝走模型工具时才会产生 token，按需发生。
-
-`/ml` 是命令家族前缀：todo 只是第一个成员，note / plan 等子命令在文法上已预留同层扩展位（见 `src/core/command.js`）。
+> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。
 
 ## 安装（本机 DSH）
 
