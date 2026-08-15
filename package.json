@@ -1,0 +1,50 @@
+{
+  "name": "dsh-notes",
+  "version": "0.1.0",
+  "description": "DSH 记事本插件：AI 时代的待办与笔记。V1 提供设置窗口与 /todo list 命令——扫描当前工作区 Markdown 中的待办（- [ ] / - [x]），格式引擎可扩展，为 AI 生成/过滤特定格式预留查询模型。",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
+    "./core": "./src/core/index.js",
+    "./settings-schema": "./src/settings-schema.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "notes",
+    "todo",
+    "markdown"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/example/dsh-notes.git"
+  },
+  "license": "MIT"
+}

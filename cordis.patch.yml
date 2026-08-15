@@ -1,0 +1,8 @@
+# dsh-notes bundle patch: inserts the plugin row into the web profile roster.
+# Install with `dsh plugin --profile web add link:<this-repo>`; the row mounts
+# BOTH halves — the host side (/todo command, settings namespace, /api/notes/*
+# routes) and the browser side (the 记事本 settings section served from
+# src/client.js).
+- insert:
+    - id: notes
+      name: 'dsh-notes'
