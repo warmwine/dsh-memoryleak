@@ -213,9 +213,9 @@ describe('宿主插件装配（apply）', () => {
     })
     expect(result.kind).toBe('success')
     expect(result.text.split('\n')[0]).toBe('待办 3 条（未完成 2 / 已完成 1） · 2 个文件')
-    expect(result.text).toContain('[ ] alpha')
-    expect(result.text).toContain('[x] beta')
-    expect(result.text).toContain('docs/plan.md')
+    expect(result.text).toContain('☐ alpha')
+    expect(result.text).toContain('☑ beta')
+    expect(result.text).toContain('■ docs/plan.md · 1 条')
     expect(result.text).not.toContain('hidden')
   })
 
@@ -226,8 +226,8 @@ describe('宿主插件装配（apply）', () => {
       signal: new AbortController().signal,
     })
     expect(result.kind).toBe('success')
-    expect(result.text).toContain('[ ] alpha')
-    expect(result.text).not.toContain('[x] beta')
+    expect(result.text).toContain('☐ alpha')
+    expect(result.text).not.toContain('☑ beta')
   })
 
   it('/ml todo list deploy 关键词过滤生效', async () => {

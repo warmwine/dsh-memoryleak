@@ -23,23 +23,36 @@ describe('renderTodoText（命令卡片文本）', () => {
     expect(firstLine).not.toMatch(/\n/)
   })
 
-  it('按文件分组、行号右对齐、状态标记正确', async () => {
+  it('TUI 排版：分组头 + 行号栏 + 选票符号', async () => {
     const report = await scanner.scan('/ws', { extensions: ['md'], excludeDirs: ['node_modules'] })
     const text = renderTodoText(report, createTodoQuery({ status: 'open' }))
-    expect(text).toContain('README.md')
-    expect(text).toContain('docs/plan.md')
-    expect(text).toContain('[ ] alpha')
-    expect(text).toContain('[ ] gamma deploy')
-    expect(text).not.toContain('[x]')
+    const lines = text.split('\n')
+    expect(lines[1]).toBe('─'.repeat(44)) // 第二行是分隔线
+    expect(lines).toContain('■ README.md · 1 条')
+    expect(lines).toContain('■ docs/plan.md · 1 条')
+    expect(lines).toContain('     1 │ ☐ alpha')
+    expect(lines).toContain('     1 │ ☐ gamma deploy')
+    expect(text).not.toContain('☑') // open 过滤下无已完成符号
   })
 
-  it('空结果显示占位文案', async () => {
+  it('已完成条目使用 ☑ 符号', async () => {
     const report = await scanner.scan('/ws', { extensions: ['md'], excludeDirs: ['node_modules'] })
-    const text = renderTodoText(report, createTodoQuery({ status: 'done', text: 'alpha' }))
-    expect(text).toContain('没有匹配的待办')
+    const text = renderTodoText(report, createTodoQuery({ status: 'done' }))
+    expect(text).toContain('☑ beta')
+    expect(text).not.toContain('☐')
   })
 
-  it('截断与跳过信息出现在尾部', async () => {
+  it('空结果显示占位文案；过滤态附带提示', async () => {
+    const report = await scanner.scan('/ws', { extensions: ['md'], excludeDirs: ['node_modules'] })
+    const filtered = renderTodoText(report, createTodoQuery({ status: 'done', text: 'alpha' }))
+    expect(filtered).toContain('没有匹配的待办')
+    expect(filtered).toContain('/ml todo list all')
+    const all = renderTodoText(report, createTodoQuery({ status: 'all', text: '不存在的词' }))
+    expect(all).toContain('（没有匹配的待办）')
+    expect(all).not.toContain('可试试')
+  })
+
+  it('截断与跳过信息出现在尾部警告块', async () => {
     const report = {
       root: '/ws',
       items: [],
@@ -50,8 +63,12 @@ describe('renderTodoText（命令卡片文本）', () => {
       formats: ['markdown-checkbox'],
     }
     const text = renderTodoText(report, createTodoQuery())
-    expect(text).toContain('已截断')
-    expect(text).toContain('跳过 1 个超大文件')
+    const lines = text.split('\n')
+    const placeholder = lines.indexOf('（没有匹配的待办）')
+    expect(placeholder).toBeGreaterThan(0)
+    expect(lines[placeholder + 1]).toBe('─'.repeat(44)) // 警告块前有第二条分隔线
+    expect(lines[placeholder + 2]).toMatch(/^⚠ 已截断/)
+    expect(text).toContain('⚠ 跳过 1 个超大文件：big.md')
     expect(text).toContain('bad.md: boom')
   })
 })
