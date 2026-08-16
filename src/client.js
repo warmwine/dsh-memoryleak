@@ -234,6 +234,41 @@ window.__ModuleLoader__.load({
           formats.map((f) => React.createElement("p", { key: f.id, style: hintStyle }, f.id + " — " + f.title + "（优先级 " + f.priority + "）"))));
     }
 
+    /* ---------------- /ml 命令的会话式视图 ----------------
+       conversation.chat.commandview 按命令名派发；默认回退是折叠的
+       GenericCommandCard（需点击展开）。这里用「默认展开」的排版替换：
+       小字命令回显 + 主题令牌的 pre 块，直接作为会话内容呈现。
+       node: { name, args, outcome: null | { kind, text? } } */
+    function MlCommandView({ node }) {
+      const outcome = node !== null && typeof node === "object" && node.outcome !== undefined ? node.outcome : null;
+      const header = "/ml" + (typeof node?.args === "string" && node.args !== "" ? node.args : "");
+      const captionStyle = {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: 12,
+        margin: "0 0 2px 4px",
+      };
+      if (outcome === null) {
+        return React.createElement("div", null,
+          React.createElement("div", { style: captionStyle }, header + " · 正在执行…"));
+      }
+      const text = typeof outcome.text === "string" ? outcome.text : "";
+      const isError = outcome.kind === "error";
+      return React.createElement("div", null,
+        React.createElement("div", { style: captionStyle }, header),
+        React.createElement("pre", {
+          style: {
+            border: "1px solid var(--dsw-alias-border-l1)",
+            background: "var(--dsw-alias-markdown-code-block)",
+            color: isError ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-primary)",
+            font: "var(--dsw-font-markdown-code-block-small)",
+            whiteSpace: "pre-wrap",
+            borderRadius: 12,
+            padding: "12px 16px",
+            margin: 0,
+          },
+        }, text === "" ? "（无输出）" : text));
+    }
+
     /* ---------------- 插件入口 ---------------- */
     const inject = ["slots"];
 
@@ -242,6 +277,12 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("settings.section", () => ctx.slots.register(
         { name: "settings.section", id: "memoryleak", order: 96, label: "记忆泄露" },
         () => React.createElement(NotesSettingsPage)
+      ));
+
+      // /ml 命令卡片：默认展开的会话式视图（替换需点击展开的通用折叠卡）。
+      ctx.slots.inject("conversation.chat.commandview", () => ctx.slots.register(
+        { name: "conversation.chat.commandview", key: "ml" },
+        (owner) => React.createElement(MlCommandView, { node: owner === null || owner === undefined ? null : owner.node })
       ));
     }
 
