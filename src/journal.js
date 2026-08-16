@@ -155,7 +155,7 @@ export async function wakeupSleepingTodos(cwd, items, today) {
  * @param {string} cwd
  * @param {string} file 工作区相对路径
  * @param {number} line 1 起始行号
- * @returns {Promise<{ done: boolean }>} 切换后的完成态
+ * @returns {Promise<{ done: boolean, raw: string }>} 切换后的完成态与该行新内容（撤销校验用）
  */
 export async function toggleTodoAt(cwd, file, line) {
   const path = join(cwd, file)
@@ -166,10 +166,39 @@ export async function toggleTodoAt(cwd, file, line) {
     throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
   const result = toggleTodoLine(content, line)
+  const raw = result.content.split('\n')[line - 1]
   try {
     await writeFile(path, result.content, 'utf8')
   } catch (error) {
     throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  return { done: result.done }
+  return { done: result.done, raw }
+}
+
+/**
+ * 撤销一次切换：把指定行翻回 d 之前的状态。以 d 完成时捕获的行内容
+ * （postRaw）做严格校验 —— 行在 d 之后被外部修改则拒绝撤销。
+ *
+ * @param {string} cwd
+ * @param {string} file
+ * @param {number} line
+ * @param {string} postRaw d 之后该行的内容（toggleTodoAt 返回的 raw）
+ * @returns {Promise<{ done: boolean }>} 撤销后的完成态
+ */
+export async function undoTodoAt(cwd, file, line, postRaw) {
+  const flipped = toggleTodoLine(postRaw, 1) // 单行内容翻回另一态
+  const path = join(cwd, file)
+  let content
+  try {
+    content = await readFile(path, 'utf8')
+  } catch (error) {
+    throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  const next = replaceLine(content, line, postRaw, flipped.content)
+  try {
+    await writeFile(path, next, 'utf8')
+  } catch (error) {
+    throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  return { done: flipped.done }
 }

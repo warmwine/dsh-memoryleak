@@ -30,8 +30,8 @@ import {
 import { parseMlArgs } from './core/command.js'
 import { applyTodoQuery, createTodoQuery } from './core/filter.js'
 import { renderTodoText } from './core/render.js'
-import { TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
-import { wakeupSleepingTodos, toggleTodoAt } from './journal.js'
+import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
+import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt } from './journal.js'
 
 /** 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。 */
 export const name = 'memoryleak'
@@ -52,6 +52,9 @@ export function apply(ctx) {
   // 每个会话最近一次 /ml todo list 的展示顺序（/ml todo d <n> 的寻址表）。
   // 序号是 list 作用域的：list 时写入，d 时消费；进程内生命周期即可。
   const lastListByAgent = new Map()
+
+  // 每个会话的 d 撤销栈（LIFO）：u 弹栈并翻回；条目含 d 后的行内容做严格校验。
+  const undoStackByAgent = new Map()
 
   // ---- 设置命名空间（非法的存储段会让本次注册抛错 → 插件加载失败；带病运行不如早崩）----
   const scope = ctx.settings.register(MEMORYLEAK_SETTINGS_NAMESPACE, memoryleakSettingsSchema, { base: MEMORYLEAK_SETTINGS_DEFAULTS })
@@ -102,6 +105,9 @@ export function apply(ctx) {
     if (parsed.action === 'toggle') {
       return toggleTodoByNumber(agent, cwd, parsed.n)
     }
+    if (parsed.action === 'undo') {
+      return undoLastToggle(agent, cwd)
+    }
     const today = formatDate(new Date())
     const query = createTodoQuery({
       status: parsed.status ?? settings.defaultStatus,
@@ -134,7 +140,7 @@ export function apply(ctx) {
     return { kind: 'success', text: renderTodoText(report, query) }
   }
 
-  /** /ml todo d <n>：按最近一次 list 的序号切换完成态。 */
+  /** /ml todo d <n>：按最近一次 list 的序号切换完成态（成功后入撤销栈）。 */
   async function toggleTodoByNumber(agent, cwd, n) {
     const list = lastListByAgent.get(agentIdOf(agent))
     if (list === undefined || list.length === 0) {
@@ -144,9 +150,36 @@ export function apply(ctx) {
       return { kind: 'error', text: `序号超出范围：最近一次列表共 ${list.length} 条（收到 ${n}）。请重新 /ml todo list。` }
     }
     const item = list[n - 1]
-    const result = await toggleTodoAt(cwd, item.file, item.line)
+    let result
+    try {
+      result = await toggleTodoAt(cwd, item.file, item.line)
+    } catch (error) {
+      if (error instanceof TodoError) return { kind: 'error', text: `切换失败：${error.message}` }
+      throw error
+    }
+    const key = agentIdOf(agent)
+    if (!undoStackByAgent.has(key)) undoStackByAgent.set(key, [])
+    undoStackByAgent.get(key).push({ file: item.file, line: item.line, postRaw: result.raw, n, text: item.text })
     const state = result.done ? '已完成 ☑' : '未完成 ☐'
     return { kind: 'success', text: `#${n} → ${state} ${item.text}\n（${item.file}:${item.line}）` }
+  }
+
+  /** /ml todo u：撤销最近一次 d（LIFO，可连续）。 */
+  async function undoLastToggle(agent, cwd) {
+    const stack = undoStackByAgent.get(agentIdOf(agent))
+    if (stack === undefined || stack.length === 0) {
+      return { kind: 'error', text: '没有可撤销的操作 —— 请先 /ml todo d <序号>。' }
+    }
+    const entry = stack.pop()
+    let result
+    try {
+      result = await undoTodoAt(cwd, entry.file, entry.line, entry.postRaw)
+    } catch (error) {
+      if (error instanceof TodoError) return { kind: 'error', text: `撤销失败：${error.message}` }
+      throw error
+    }
+    const state = result.done ? '已完成 ☑' : '未完成 ☐'
+    return { kind: 'success', text: `已撤销 #${entry.n} → ${state} ${entry.text}\n（${entry.file}:${entry.line}）` }
   }
 
   /** agent → 稳定键（无 id 的调用降级为共享桶）。 */

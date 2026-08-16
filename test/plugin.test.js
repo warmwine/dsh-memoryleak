@@ -619,3 +619,84 @@ describe('/ml todo d 与唤醒转写（端到端）', () => {
     expect(bad.kind).toBe('error')
   })
 })
+
+describe('/ml todo u 撤销（端到端）', () => {
+  const host = createFakeHost()
+  let command
+  let uWs
+  let daily
+
+  beforeAll(async () => {
+    apply(host.ctx)
+    command = host.commands.find((definition) => definition.name === 'ml')
+    uWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-u-'))
+    daily = `${formatDate(new Date())}.md`
+    const { insertTodoLine } = await import('../src/core/journal.js')
+    const content = insertTodoLine('', '- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿')
+    await writeFile(join(uWs, daily), content)
+  })
+
+  afterAll(async () => {
+    await rm(uWs, { recursive: true, force: true })
+  })
+
+  const run = (rawInput) =>
+    command.handler({
+      agent: { id: 'agent-u-test', session: { header: { cwd: uWs } } },
+      rawInput,
+      signal: new AbortController().signal,
+    })
+
+  it('未 d 先 u → 提示无可撤销', async () => {
+    const result = await run('todo u')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('没有可撤销的操作')
+  })
+
+  it('d 1 → u 完整往返：文件回到未完成，回显已撤销', async () => {
+    const toggled = await run('todo list').then(() => run('todo d 1'))
+    expect(toggled.kind).toBe('success')
+    expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain('- [x] (ml:deadline 2026-09-01 urgent) 完成设计稿')
+
+    const undone = await run('todo u')
+    expect(undone.kind).toBe('success')
+    expect(undone.text).toContain('已撤销 #1 → 未完成 ☐')
+    expect(undone.text).toContain('完成设计稿')
+    expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain('- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿')
+  })
+
+  it('栈空再 u → 报错', async () => {
+    const result = await run('todo u')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('没有可撤销的操作')
+  })
+
+  it('d 后文件被外部修改 → u 拒绝撤销（行内容校验）', async () => {
+    await run('todo d 1') // 切到 [x]
+    const content = await readFile(join(uWs, daily), 'utf8')
+    await writeFile(join(uWs, daily), content.replace('完成设计稿', '改过的内容'))
+    const result = await run('todo u')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('撤销失败')
+    expect(result.text).toContain('已变化')
+  })
+
+  it('连续 d 多次可连续 u（LIFO）', async () => {
+    // 重置文件为未完成
+    const content = await readFile(join(uWs, daily), 'utf8')
+    await writeFile(join(uWs, daily), content.replace('- [x] (ml:deadline', '- [ ] (ml:deadline'))
+    await run('todo list')
+    await run('todo d 1') // → done
+    await run('todo d 1') // → open
+    const undone = await run('todo u') // → done（撤销第二次 d）
+    expect(undone.kind).toBe('success')
+    expect(undone.text).toContain('已撤销 #1 → 已完成 ☑')
+    expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain('- [x] (ml:deadline 2026-09-01 urgent) 改过的内容')
+  })
+
+  it('u 带参数是用法错误', async () => {
+    const result = await run('todo u 1')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('不带参数')
+  })
+})

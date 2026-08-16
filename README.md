@@ -24,6 +24,7 @@
 | `/ml todo list all` / `open` / `done` | 同上，指定状态；`all` 同时包含未唤醒的 sleep 型 | **0** |
 | `/ml todo list <关键词>` | 同上，按关键词过滤（大小写不敏感，可与状态词组合） | **0** |
 | `/ml todo d <n>`（或 `done <n>`） | 切换**最近一次 list** 结果中第 n 条的完成态（序号是 list 作用域的；未 list 先报错提示） | **0** |
+| `/ml todo u`（或 `undo`） | 撤销最近一次 `d`（可连续撤销，LIFO；d 之后该行被外部修改则拒绝撤销） | **0** |
 | `/ml todo` | 省略操作默认 `list`，等价 `/ml todo list` | **0** |
 | 设置窗口「MemoryLeak」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词、日志模式与模板（`/api/memoryleak/*` HTTP 路由） | **0** |
 

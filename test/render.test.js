@@ -23,15 +23,16 @@ describe('renderTodoText（命令卡片文本）', () => {
     expect(firstLine).not.toMatch(/\n/)
   })
 
-  it('TUI 排版：分组头 + 序号. 行号栏 + 选票符号', async () => {
+  it('TUI 排版：分组头 + 序号列 + 选票符号（不显示行号）', async () => {
     const report = await scanner.scan('/ws', { extensions: ['md'], excludeDirs: ['node_modules'] })
     const text = renderTodoText(report, createTodoQuery({ status: 'open' }))
     const lines = text.split('\n')
     expect(lines[1]).toBe('─'.repeat(44)) // 第二行是分隔线
     expect(lines).toContain('■ README.md · 1 条')
     expect(lines).toContain('■ docs/plan.md · 1 条')
-    expect(lines).toContain('  1.    1 │ ☐ alpha')
-    expect(lines).toContain('  2.    1 │ ☐ gamma deploy')
+    expect(lines).toContain('  1. ☐ alpha')
+    expect(lines).toContain('  2. ☐ gamma deploy')
+    expect(text).not.toContain('│') // 行号栏已移除
     expect(text).not.toContain('☑') // open 过滤下无已完成符号
   })
 

@@ -11,8 +11,8 @@
  *   待办 N 条（…） · M 个文件                ← 摘要行（折叠卡片可见的开头）
  *   ────────────────────────────             ← 分隔线
  *   ■ docs/plan.md · 2 条                    ← 文件分组头
- *    1.   12 │ ☐ 未完成事项                   ← 序号. 行号 │ 选票符号 正文
- *    2.   34 │ ☑ 已完成事项                   （序号供 /ml todo d <n>）
+ *    1. ☐ 未完成事项                          ← 序号. 选票符号 [徽章] 正文
+ *    2. ☑ 已完成事项                          （序号供 /ml todo d <n>；不显示文件行号）
  *   ☀ 唤醒块（sleep 到日转写为 active 的计数）
  *   ⚠ 警告块（截断 / 跳过 / 读取失败）
  *
@@ -26,7 +26,6 @@ const STATUS_LABEL = Object.freeze({ open: '未完成', done: '已完成', all: 
 /** TUI 排版字符（等宽环境安全；右边界不封口——CJK 宽度无法对齐右框）。 */
 const RULE = '─'.repeat(44)
 const FILE_BULLET = '■'
-const GUTTER = '│'
 const GLYPH_OPEN = '☐'
 const GLYPH_DONE = '☑'
 const WARN = '⚠'
@@ -87,7 +86,7 @@ export function renderTodoText(report, query = createTodoQuery()) {
       displayId += 1
       const glyph = item.done ? GLYPH_DONE : GLYPH_OPEN
       const idColumn = `${String(displayId).padStart(3)}.`
-      lines.push(`${idColumn} ${String(item.line).padStart(4)} ${GUTTER} ${glyph}${metaBadge(item.meta)} ${item.text}`)
+      lines.push(`${idColumn} ${glyph}${metaBadge(item.meta)} ${item.text}`)
     }
   }
   if (report.wokenCount > 0) lines.push(RULE, `${WOKE} 已唤醒 ${report.wokenCount} 条 sleep 待办（转写为 active）`)

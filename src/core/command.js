@@ -6,6 +6,7 @@
  *   /ml todo add <文本>             → 添加结构化待办（提问类型/优先级/日期）到 ## Todo
  *   /ml todo [list] [状态] [关键词]  → 列出工作区 Markdown 待办（默认隐藏未唤醒的 sleep）
  *   /ml todo d <n> | done <n>       → 切换最近一次 list 结果中第 n 条的完成态
+ *   /ml todo u | undo               → 撤销最近一次 d（可连续撤销，LIFO）
  *
  * 家族判定：第一个词是 `todo` 即待办家族（todo 是保留字，记录文本以 todo
  * 开头时请换措辞）；其余一切非空输入都是记录文本。
@@ -17,7 +18,7 @@
 import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
 
-export const ML_USAGE = '/ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号>'
+export const ML_USAGE = '/ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号> · /ml todo u'
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
@@ -56,6 +57,10 @@ export function parseMlArgs(rawInput) {
       throw new TodoUsageError('用法：/ml todo d <序号>（序号来自最近一次 /ml todo list 的输出）')
     }
     return { family: 'todo', action: 'toggle', n }
+  }
+  if (action === 'u' || action === 'undo') {
+    if (rest.length > 0) throw new TodoUsageError('用法：/ml todo u（撤销最近一次 d，不带参数）')
+    return { family: 'todo', action: 'undo' }
   }
   if (action !== undefined && action !== 'list') {
     throw new TodoUsageError(`未知操作 "${action}"。用法：${ML_USAGE}`)

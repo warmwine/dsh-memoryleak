@@ -23,6 +23,13 @@ describe('parseMlArgs（/ml 文法）', () => {
       expect(() => parseMlArgs('todo create something')).toThrow(TodoUsageError)
       expect(() => parseMlArgs('todo create something')).toThrow(/未知操作/)
     })
+
+    it('u / undo：撤销最近一次 d', () => {
+      expect(parseMlArgs('todo u')).toEqual({ family: 'todo', action: 'undo' })
+      expect(parseMlArgs('todo undo')).toEqual({ family: 'todo', action: 'undo' })
+      expect(() => parseMlArgs('todo u 1')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('todo u 1')).toThrow(/不带参数/)
+    })
   })
 
   describe('journal 家族（/ml <文本>）', () => {
