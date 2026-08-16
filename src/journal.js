@@ -21,6 +21,7 @@ import {
   weeklyFileName,
 } from './core/journal.js'
 import { activateSleepLine } from './core/formats/memoryleak-todo.js'
+import { createNodeFileSource } from './adapters/node-file-source.js'
 
 /** 日志读写故障（环境错误，命令层转用户可见结果）。 */
 export class JournalIoError extends TodoError {}
@@ -99,6 +100,49 @@ async function writeJournal(located, next) {
       `写入 ${located.file} 失败：${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     )
+  }
+}
+
+/**
+ * 列出工作区内符合扫描设置的文件（只看文件名，不读内容；供 /ml view
+ * 模糊解析与快速打开弹窗共用）。按名字降序 —— 日期型文件名（日志/周志）
+ * 天然新的在前。
+ *
+ * @param {object} input
+ * @param {string} input.cwd
+ * @param {object} input.settings（extensions / excludeDirs）
+ * @param {number} [input.limit] 默认 200
+ * @param {AbortSignal | null} [input.signal]
+ * @returns {Promise<Array<{ name: string, bytes: number }>>}
+ */
+export async function listWorkspaceFiles({ cwd, settings, limit = 200, signal = null }) {
+  const source = createNodeFileSource()
+  const listing = await source.list(
+    cwd,
+    { extensions: settings.extensions, excludeDirs: settings.excludeDirs, maxFiles: limit },
+    signal,
+  )
+  const files = listing.files.map((file) => ({ name: file.path, bytes: file.bytes }))
+  files.sort((left, right) => (left.name > right.name ? -1 : left.name < right.name ? 1 : 0))
+  return files
+}
+
+/**
+ * 读取工作区内任意（符合扫描设置的）文件的只读内容（/ml view <文件> 用）。
+ *
+ * @param {string} cwd
+ * @param {string} name 工作区相对路径
+ * @returns {Promise<string>}
+ */
+export async function readWorkspaceFile(cwd, name) {
+  if (typeof name !== 'string' || name === '' || name.includes('..') || /^[a-zA-Z]:/.test(name) || name.startsWith('/') || name.startsWith('\\')) {
+    throw new JournalIoError(`非法文件路径：${String(name)}`)
+  }
+  try {
+    return await readFile(join(cwd, name), 'utf8')
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new JournalIoError(`文件不存在：${name}`)
+    throw new JournalIoError(`读取 ${name} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
 }
 

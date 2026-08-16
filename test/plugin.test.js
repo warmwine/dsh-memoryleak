@@ -45,8 +45,14 @@ function createFakeHost(answers = {}) {
   const commands = []
   const effects = []
   const askLog = []
+  const sessions = new Map() // sessionId → { header: { cwd } }（files 路由测试注册）
   const ctx = {
     settings,
+    sessions: {
+      get(id) {
+        return sessions.get(id)
+      },
+    },
     // 伪 userQuestions：按问题 id 返回预置答案（端到端注入点）
     get(name) {
       if (name !== 'userQuestions') return undefined
@@ -94,11 +100,11 @@ function createFakeHost(answers = {}) {
       return dispose
     },
   }
-  return { ctx, routes, commands, effects, settings, askLog }
+  return { ctx, routes, commands, effects, settings, askLog, sessions }
 }
 
 /** 最小 req/res 桩：驱动一条 exact 路由。 */
-async function invokeRoute(route, method, payload) {
+async function invokeRoute(route, method, payload, url) {
   const out = { status: 0, headers: {}, body: null }
   const res = {
     writeHead(status, headers) {
@@ -112,6 +118,7 @@ async function invokeRoute(route, method, payload) {
   const listeners = {}
   const req = {
     method,
+    url: url ?? route.path,
     on(event, callback) {
       ;(listeners[event] ??= []).push(callback)
       return req
@@ -159,6 +166,7 @@ describe('宿主插件装配（apply）', () => {
 
   it('注册 3 条 API 路由（GET/POST /settings 合一）与 1 条 /ml 命令', () => {
     expect(host.routes.map((route) => `${route.kind} ${route.path}`).sort()).toEqual([
+      'exact /api/memoryleak/files',
       'exact /api/memoryleak/formats',
       'exact /api/memoryleak/settings',
       'exact /api/memoryleak/settings/reset',
@@ -315,7 +323,7 @@ describe('宿主插件装配（apply）', () => {
     for (const dispose of host.effects) dispose()
     expect(host.routes).toHaveLength(0)
     expect(host.commands).toHaveLength(0)
-    expect(routesBefore).toBe(3)
+    expect(routesBefore).toBe(4)
     expect(commandsBefore).toBe(1)
   })
 })
@@ -471,11 +479,94 @@ describe('/ml view（端到端）', () => {
     expect(result.text).not.toContain('第一条记录')
   })
 
-  it('带参数是用法错误', async () => {
-    const result = await run('view 2026-08-01')
+  it('带参数：exact 文件名直接查看', async () => {
+    const daily = `${formatDate(new Date())}.md`
+    const result = await run(`view ${daily}`)
+    expect(result.kind).toBe('success')
+    expect(result.text.startsWith(`${daily}\n`)).toBe(true)
+    expect(result.text).toContain('第一条记录')
+  })
+
+  it('带参数：去扩展名 stem 唯一对应', async () => {
+    const stem = formatDate(new Date())
+    const result = await run(`view ${stem}`)
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain(`${stem}.md`)
+  })
+
+  it('带参数：无匹配报错并提示', async () => {
+    const result = await run('view zzz不存在')
     expect(result.kind).toBe('error')
-    expect(result.text).toContain('/ml view')
-    expect(result.text).toContain('无参数')
+    expect(result.text).toContain('没有匹配')
+  })
+})
+
+describe('/ml view 模糊解析（多文件场景，端到端）', () => {
+  const host = createFakeHost()
+  let command
+  let fuzzyWs
+
+  beforeAll(async () => {
+    apply(host.ctx)
+    command = host.commands.find((definition) => definition.name === 'ml')
+    fuzzyWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-fuzzy-'))
+    await writeFile(join(fuzzyWs, '2026-08-15.md'), '# 15 日\n- [ ] a\n')
+    await writeFile(join(fuzzyWs, '2026-08-16.md'), '# 16 日\n- [ ] b\n')
+    await writeFile(join(fuzzyWs, '2026W33.md'), 'start: 2026-08-10\nend: 2026-08-16\n')
+    await mkdir(join(fuzzyWs, 'docs'), { recursive: true })
+    await writeFile(join(fuzzyWs, 'docs', 'plan.md'), '# 计划\n')
+  })
+
+  afterAll(async () => {
+    await rm(fuzzyWs, { recursive: true, force: true })
+  })
+
+  const run = (rawInput) =>
+    command.handler({
+      agent: { id: 'agent-fuzzy-test', session: { header: { cwd: fuzzyWs } } },
+      rawInput,
+      signal: new AbortController().signal,
+    })
+
+  it('unique：明显赢家直接查看（w33 → 2026W33.md）', async () => {
+    const result = await run('view w33')
+    expect(result.kind).toBe('success')
+    expect(result.text.startsWith('2026W33.md\n')).toBe(true)
+    expect(result.text).toContain('start: 2026-08-10')
+  })
+
+  it('unique：唯一子序列（plan → docs/plan.md）', async () => {
+    const result = await run('view plan')
+    expect(result.kind).toBe('success')
+    expect(result.text.startsWith('docs/plan.md\n')).toBe(true)
+  })
+
+  it('ambiguous：多候选列出并要求更具体（08-1 命中 15/16 两天）', async () => {
+    const result = await run('view 08-1')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('匹配到多个文件')
+    expect(result.text).toContain('2026-08-15.md')
+    expect(result.text).toContain('2026-08-16.md')
+    // 用更长的片段即可消歧
+    const resolved = await run('view 26815')
+    expect(resolved.kind).toBe('success')
+    expect(resolved.text.startsWith('2026-08-15.md\n')).toBe(true)
+  })
+
+  it('GET /files：按会话定位工作区，返回文件清单（名字降序）', async () => {
+    host.sessions.set('agent-fuzzy-test', { header: { cwd: fuzzyWs } })
+    const route = host.routes.find((entry) => entry.path === '/api/memoryleak/files')
+    const ok = await invokeRoute(route, 'GET', undefined, `${route.path}?session=agent-fuzzy-test&limit=10`)
+    expect(ok.status).toBe(200)
+    expect(ok.body.ok).toBe(true)
+    const names = ok.body.files.map((file) => file.name)
+    expect(names).toContain('2026-08-16.md')
+    expect(names).toContain('docs/plan.md')
+    expect(names[0]).toBe('docs/plan.md') // 降序：docs/ > 2026W33 > 2026-08-16
+    // 无 session → 400
+    const noSession = await invokeRoute(route, 'GET', undefined, route.path)
+    expect(noSession.status).toBe(400)
+    expect(noSession.body.ok).toBe(false)
   })
 })
 

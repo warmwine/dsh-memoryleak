@@ -67,12 +67,13 @@ describe('parseMlArgs（/ml 文法）', () => {
       expect(help).not.toMatch(/\/ml todo (?!add|list|n|l|d|u|done|undo)\w+/)
     })
 
-    it('view / v：显示当前日志（无参数）', () => {
-      expect(parseMlArgs('view')).toEqual({ family: 'view' })
-      expect(parseMlArgs('v')).toEqual({ family: 'view' })
-      expect(parseMlArgs('  view  ')).toEqual({ family: 'view' })
-      expect(() => parseMlArgs('view 2026-08-01')).toThrow(TodoUsageError)
-      expect(() => parseMlArgs('view 2026-08-01')).toThrow(/无参数/)
+    it('view / v：无参数看当前日志，带参数为模糊查询', () => {
+      expect(parseMlArgs('view')).toEqual({ family: 'view', text: null })
+      expect(parseMlArgs('v')).toEqual({ family: 'view', text: null })
+      expect(parseMlArgs('  view  ')).toEqual({ family: 'view', text: null })
+      expect(parseMlArgs('view 2026-08-01')).toEqual({ family: 'view', text: '2026-08-01' })
+      expect(parseMlArgs('v feb no')).toEqual({ family: 'view', text: 'feb no' })
+      expect(parseMlArgs('v docs/plan')).toEqual({ family: 'view', text: 'docs/plan' })
     })
   })
 

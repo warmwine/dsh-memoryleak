@@ -306,8 +306,41 @@ window.__ModuleLoader__.load({
         }, text === "" ? "（无输出）" : text));
     }
 
+    /* ---------------- /ml 快速打开（popupSelect 壳）----------------
+       从命令菜单选中 /ml 时，不再直接占用输入框，而是在输入框上方弹出
+       「快速打开」选择卡（官方 popupSelect 壳）：自带搜索框本地过滤，
+       ↑↓ 移动高亮（默认第 1 项，紧贴搜索框），Enter 选中，Esc 关闭，
+       点击卡外任意处关闭。选中即执行 /ml view <文件>（走正常命令面，
+       零 token）。候选来自宿主 /api/memoryleak/files（按会话定位工作区），
+       新文件在前。Tab 补全由上游壳决定（当前版本未绑定 Tab）。 */
+    function mlQuickOpenSpec(ctx) {
+      return {
+        async options(session, signal) {
+          const sessionId = session !== null && typeof session === "object" ? session.sessionId : undefined
+          if (typeof sessionId !== "string" || sessionId === "") throw new Error("无法定位当前会话")
+          const url = `${API}/files?session=${encodeURIComponent(sessionId)}&limit=50`
+          const res = await fetch(url, signal !== null && signal !== undefined ? { signal } : undefined)
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok || body.ok === false) throw new Error(body.error || "HTTP " + res.status)
+          const files = Array.isArray(body.files) ? body.files : []
+          if (files.length === 0) return []
+          return files.map((file) => ({
+            id: file.name,
+            label: file.name,
+            detail: `${Math.max(1, Math.round(file.bytes / 1024))} KB`,
+          }))
+        },
+        async onSelect(option, session) {
+          const sessionId = session !== null && typeof session === "object" ? session.sessionId : undefined
+          if (typeof sessionId !== "string" || sessionId === "") throw new Error("无法定位当前会话")
+          const result = await ctx.remote.commands.execute(sessionId, `/ml view ${option.id}`)
+          if (!result.ok) throw new Error(`执行失败：${result.error?.message ?? result.error?.code ?? "未知错误"}`)
+        },
+      }
+    }
+
     /* ---------------- 插件入口 ---------------- */
-    const inject = ["slots"];
+    const inject = ["slots", "commandUi", "remote", "remote.commands"];
 
     function apply(ctx) {
       // 设置窗口：GUI 设置面板中的一个「MemoryLeak」分区（与字体设置页同款槽位）。
@@ -323,6 +356,13 @@ window.__ModuleLoader__.load({
         { name: "conversation.chat.commandview", key: "ml" },
         (owner) => React.createElement(MlCommandView, { node: owner === null || owner === undefined ? null : owner.node })
       ));
+
+      // 命令菜单选中 /ml → 快速打开弹窗（VSCode Ctrl+P 风格查看文件）。
+      ctx.effect(() => ctx.commandUi.decorate({
+        name: "ml",
+        available: () => true,
+        ui: mlQuickOpenSpec(ctx),
+      }), "memoryleak: /ml quick-open popup");
     }
 
     exports.apply = apply;

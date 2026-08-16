@@ -7,12 +7,16 @@
  *                                      校验失败 400；版本冲突 409（乐观并发）
  *   POST /api/memoryleak/settings/reset  → 清空用户层，回到默认
  *   GET  /api/memoryleak/formats         → { ok, formats: [{ id, title, priority }] }
+ *   GET  /api/memoryleak/files?session=&limit=
+ *                                       → { ok, files: [{ name, bytes }] }（快速打开
+ *                                         弹窗的候选源；session 用于定位工作区）
  *
  * 失败一律显式返回 { ok: false, error }，绝不静默。
  *
  * @module dsh-memoryleak/routes
  */
 import { MEMORYLEAK_SETTINGS_NAMESPACE, MEMORYLEAK_SETTINGS_DEFAULTS, resolveMemoryleakSettings } from './settings-schema.js'
+import { listWorkspaceFiles } from './journal.js'
 
 /** 浏览器侧 API 前缀。 */
 export const MEMORYLEAK_API_PREFIX = '/api/memoryleak'
@@ -164,7 +168,37 @@ export function makeMemoryleakRoutes({ ctx, scope, registry }) {
     },
   }
 
-  return [settingsRoute, postReset, getFormats]
+  /** GET /files?session=&limit=（快速打开候选；session → live 会话 → cwd） */
+  const getFiles = {
+    kind: 'exact',
+    path: `${MEMORYLEAK_API_PREFIX}/files`,
+    handler: (req, res) => {
+      if (!requireMethod(req, res, 'GET')) return
+      Promise.resolve()
+        .then(async () => {
+          const url = new URL(req.url, 'http://local')
+          const sessionId = url.searchParams.get('session') ?? ''
+          const limitParam = Number(url.searchParams.get('limit'))
+          const limit = Number.isInteger(limitParam) && limitParam >= 1 && limitParam <= 1000 ? limitParam : 200
+          const session = ctx.sessions?.get(sessionId)
+          const cwd = session?.header?.cwd
+          if (typeof cwd !== 'string' || cwd === '') {
+            throw Object.assign(new Error(`会话 ${sessionId || '(空)'} 没有绑定工作区`), { status: 400 })
+          }
+          const settings = resolveMemoryleakSettings(scope.get())
+          const files = await listWorkspaceFiles({ cwd, settings, limit })
+          json(res, 200, { ok: true, files })
+        })
+        .catch((error) => {
+          json(res, error !== null && typeof error === 'object' && Number.isInteger(error.status) ? error.status : 400, {
+            ok: false,
+            error: errorMessage(error),
+          })
+        })
+    },
+  }
+
+  return [settingsRoute, postReset, getFormats, getFiles]
 }
 
 function errorMessage(error) {

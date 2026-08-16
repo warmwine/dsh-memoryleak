@@ -7,7 +7,7 @@
  *   /ml todo l|list [状态] [关键词]      → 列出工作区 Markdown 待办（默认隐藏未唤醒的 sleep）
  *   /ml todo d|done <n>                 → 切换最近一次 list 结果中第 n 条的完成态
  *   /ml todo u|undo                     → 撤销最近一次 d（可连续撤销，LIFO）
- *   /ml view|v                          → 显示当前日志/周志文件内容
+ *   /ml view|v [文件名片段]              → 显示当前日志/周志，或模糊匹配并显示指定文件
  *   /ml help|h                          → 命令一览（汇总说明）
  *
  * 家族判定：第一个词是 `todo` / `view` / `help` 即对应家族（保留字，记录文本
@@ -20,7 +20,7 @@
 import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
 
-export const ML_USAGE = '/ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号> · /ml todo u · /ml view · /ml help'
+export const ML_USAGE = '/ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号> · /ml todo u · /ml view [文件名片段] · /ml help'
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
@@ -29,7 +29,7 @@ export const ML_USAGE = '/ml <文本> · /ml todo add <文本> · /ml todo list 
  * } | {
  *   family: 'help'
  * } | {
- *   family: 'view'
+ *   family: 'view', text: string | null
  * } | {
  *   family: 'todo', action: 'add', text: string
  * } | {
@@ -54,10 +54,8 @@ export function parseMlArgs(rawInput) {
     return { family: 'help' }
   }
   if (family === 'view' || family === 'v') {
-    if (rest.length > 0 || (action !== undefined && action !== '')) {
-      throw new TodoUsageError('用法：/ml view（显示当前日志/周志，无参数）')
-    }
-    return { family: 'view' }
+    const text = [action, ...rest].filter((token) => token !== undefined && token !== '').join(' ')
+    return { family: 'view', text: text === '' ? null : text }
   }
   if (family !== 'todo') {
     return { family: 'journal', text: tokens.join(' ') }
@@ -112,8 +110,9 @@ export function renderMlHelp() {
     '  切换最近一次列表中该条目的完成态（需先 list）',
     '/ml todo u（全称 /ml todo undo）',
     '  撤销最近一次 d，可连续撤销（LIFO）',
-    '/ml view（简写 /ml v）',
-    '  显示当前的日志/周志文件内容（按设置的日志模式定位；未创建则提示）',
+    '/ml view [文件名片段]（简写 /ml v；无参数 = 当前日志/周志）',
+    '  显示文件内容：片段按 VSCode Ctrl+P 风格模糊匹配工作区文件；',
+    '  从命令菜单选择 /ml 则弹出快速打开面板（搜索/↑↓/Enter）',
     '/ml help（简写 /ml h）',
     '  显示本帮助',
     '',

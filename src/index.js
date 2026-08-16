@@ -31,7 +31,8 @@ import { parseMlArgs, renderMlHelp } from './core/command.js'
 import { applyTodoQuery, createTodoQuery } from './core/filter.js'
 import { renderTodoText } from './core/render.js'
 import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
-import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt, readJournalFile } from './journal.js'
+import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt, readJournalFile, listWorkspaceFiles, readWorkspaceFile } from './journal.js'
+import { resolveViewTarget } from './core/fuzzy.js'
 
 /** 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。 */
 export const name = 'memoryleak'
@@ -105,12 +106,26 @@ export function apply(ctx) {
       return { kind: 'success', text: `已记录 → ${record.file} ${where}${suffix}\n- ${record.note}` }
     }
     if (parsed.family === 'view') {
-      const journal = await readJournalFile({ cwd, settings })
-      if (!journal.exists) {
-        return { kind: 'success', text: `尚未创建：${journal.file}\n（首次 /ml 记录或 /ml todo add 时按模板自动创建）` }
+      if (parsed.text === null) {
+        const journal = await readJournalFile({ cwd, settings })
+        if (!journal.exists) {
+          return { kind: 'success', text: `尚未创建：${journal.file}\n（首次 /ml 记录或 /ml todo add 时按模板自动创建）` }
+        }
+        const modeLabel = journal.mode === 'weekly' ? '周志' : '日志'
+        return { kind: 'success', text: `${journal.file}（${modeLabel}）\n${'─'.repeat(44)}\n${journal.content.replace(/\n$/, '')}` }
       }
-      const modeLabel = journal.mode === 'weekly' ? '周志' : '日志'
-      return { kind: 'success', text: `${journal.file}（${modeLabel}）\n${'─'.repeat(44)}\n${journal.content.replace(/\n$/, '')}` }
+      // 带参数：在扫描范围内的文件名中做模糊解析（VSCode Ctrl+P 风格）
+      const files = await listWorkspaceFiles({ cwd, settings })
+      const target = resolveViewTarget(parsed.text, files.map((file) => file.name))
+      if (target.kind === 'none') {
+        return { kind: 'error', text: `没有匹配「${parsed.text}」的文件。可先 /ml view 查看当前日志，或检查设置中的扫描范围。` }
+      }
+      if (target.kind === 'ambiguous') {
+        const list = target.names.map((name, index) => `  ${index + 1}. ${name}`).join('\n')
+        return { kind: 'error', text: `「${parsed.text}」匹配到多个文件，请用更长的片段或完整文件名：\n${list}` }
+      }
+      const content = await readWorkspaceFile(cwd, target.name)
+      return { kind: 'success', text: `${target.name}\n${'─'.repeat(44)}\n${content.replace(/\n$/, '')}` }
     }
     if (parsed.action === 'add') {
       return addTodoFlow(agent, cwd, settings, parsed.text, signal)
