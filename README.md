@@ -46,7 +46,7 @@ src/core/      纯域（零依赖，vitest 直测）
   render.js      文本渲染（命令卡片）+ JSON 渲染（AI 预留契约）
 src/adapters/  node（真实 fs）/ memory（测试·预览）双适配器
 src/index.js   宿主半：/ml todo 命令 · memoryleak 设置命名空间 · /api/memoryleak/* 路由
-src/client.js  浏览器半：设置窗口 + /ml 命令的默认展开视图（commandview 槽位）
+src/client.js  浏览器半：设置窗口（settings.section 槽位）
 ```
 
 设计模式与 let-it-crash 故障分级见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
