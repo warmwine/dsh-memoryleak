@@ -1,7 +1,7 @@
 {
   "name": "dsh-memoryleak",
-  "version": "0.10.0",
-  "description": "DSH MemoryLeak 插件：/ml help 查看全部命令。/ml <文本> 记一笔到日志/周志；/ml view [片段] 快速查看（手动输入时输入框上方弹实时候选卡：↑↓/Tab 补全/Enter 打开）；/ml todo add 固定表单加结构化待办；/ml todo list 列待办（sleep 到日唤醒）；/ml todo d/u 切换与撤销。全程无 LLM、零 token。",
+  "version": "0.11.0",
+  "description": "DSH MemoryLeak 插件：/ml help 查看全部命令。/ml <文本> 记一笔到日志/周志；/ml view [片段] 快速查看（实时候选卡：当前日志置顶，↑↓/Tab 补全/Enter 打开）；/ml todo add 固定表单加结构化待办；/ml todo list 列待办（sleep 到日唤醒）；/ml todo d/u 切换与撤销。全程无 LLM、零 token。",
   "type": "module",
   "main": "src/index.js",
   "exports": {

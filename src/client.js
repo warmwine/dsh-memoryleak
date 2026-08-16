@@ -392,6 +392,7 @@ window.__ModuleLoader__.load({
       const open = match !== null;
 
       const [names, setNames] = React.useState(null); // null = 加载中
+      const [currentFile, setCurrentFile] = React.useState(null); // 当前日志/周志（空片段时置顶）
       const [error, setError] = React.useState(null);
       const [active, setActive] = React.useState(0);
       const [dismissedDraft, setDismissedDraft] = React.useState(null);
@@ -404,10 +405,12 @@ window.__ModuleLoader__.load({
         const cached = QUICK_OPEN_CACHE.get(sessionId);
         if (cached !== undefined && Date.now() - cached.at < QUICK_OPEN_TTL) {
           setNames(cached.names);
+          setCurrentFile(cached.current ?? null);
           setError(null);
           return undefined;
         }
         setNames(null);
+        setCurrentFile(null);
         setError(null);
         fetch(`${API}/files?session=${encodeURIComponent(sessionId)}&limit=50`)
           .then((res) => res.json())
@@ -415,8 +418,10 @@ window.__ModuleLoader__.load({
             if (cancelled) return;
             if (body.ok !== true) throw new Error(body.error || "HTTP " + res.status);
             const list = Array.isArray(body.files) ? body.files.map((file) => file.name) : [];
-            QUICK_OPEN_CACHE.set(sessionId, { at: Date.now(), names: list });
+            const current = typeof body.current === "string" ? body.current : null;
+            QUICK_OPEN_CACHE.set(sessionId, { at: Date.now(), names: list, current });
             setNames(list);
+            setCurrentFile(current);
           })
           .catch((e) => {
             if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -426,7 +431,12 @@ window.__ModuleLoader__.load({
 
       const rows = React.useMemo(() => {
         if (names === null) return [];
-        if (fragment === "") return names.slice(0, QUICK_OPEN_MAX_ROWS).map((name) => ({ name, score: 0 }));
+        if (fragment === "") {
+          // 空片段：当前日志/周志置顶（不存在也显示 —— 选中即经宿主按模板创建路径查看）
+          const rest = names.filter((name) => name !== currentFile)
+          const head = currentFile === null ? [] : [{ name: currentFile, score: 0, current: true }]
+          return [...head, ...rest.slice(0, Math.max(0, QUICK_OPEN_MAX_ROWS - head.length))]
+        }
         const scored = [];
         for (const name of names) {
           const score = quickScore(name, fragment);
@@ -434,7 +444,7 @@ window.__ModuleLoader__.load({
         }
         scored.sort((left, right) => (right.score - left.score) || (left.name < right.name ? -1 : 1));
         return scored.slice(0, QUICK_OPEN_MAX_ROWS);
-      }, [names, fragment]);
+      }, [names, fragment, currentFile]);
 
       React.useEffect(() => { setActive(0); }, [fragment]);
 
@@ -556,7 +566,11 @@ window.__ModuleLoader__.load({
           onMouseDown: (ev) => { ev.preventDefault(); pick(row.name); },
           onMouseEnter: () => { setActive(index); },
         },
-          React.createElement("span", null, row.name),
+          React.createElement("span", null,
+            row.name,
+            row.current === true ? React.createElement("span", {
+              style: { color: "var(--dsw-alias-label-primary-bluish)", fontSize: 11, marginLeft: 8, flex: "0 0 auto" },
+            }, "· 当前") : null),
           React.createElement("span", { style: metaStyle }, String(index + 1))));
       }
       return React.createElement("div", { style: cardStyle, "data-ml-quick-open": "1" },

@@ -17,6 +17,7 @@
  */
 import { MEMORYLEAK_SETTINGS_NAMESPACE, MEMORYLEAK_SETTINGS_DEFAULTS, resolveMemoryleakSettings } from './settings-schema.js'
 import { listWorkspaceFiles } from './journal.js'
+import { dailyFileName, weeklyFileName } from './core/journal.js'
 
 /** 浏览器侧 API 前缀。 */
 export const MEMORYLEAK_API_PREFIX = '/api/memoryleak'
@@ -187,7 +188,10 @@ export function makeMemoryleakRoutes({ ctx, scope, registry }) {
           }
           const settings = resolveMemoryleakSettings(scope.get())
           const files = await listWorkspaceFiles({ cwd, settings, limit })
-          json(res, 200, { ok: true, files })
+          const now = new Date()
+          const current =
+            settings.journalMode === 'weekly' ? weeklyFileName(now) : dailyFileName(now)
+          json(res, 200, { ok: true, files, current })
         })
         .catch((error) => {
           json(res, error !== null && typeof error === 'object' && Number.isInteger(error.status) ? error.status : 400, {

@@ -1,18 +1,19 @@
 # dsh-memoryleak —— DSH MemoryLeak 插件
 
 > MemoryLeak：数据模型优先、格式可扩展、问题尽早暴露。
+> 一切走命令面：**零 token、不进模型历史、不影响 KV cache**。
 
-[English](README.md) · 开发要则见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+[English](README.md) · 更新历史见 [CHANGELOG.md](CHANGELOG.md) · 开发要则见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 
-## 功能
+## 这是什么
 
-- **设置窗口**：GUI 设置面板新增「MemoryLeak」分区（与「字体」设置页同款位置），
-  可配置扫描扩展名、排除目录、文件/条目上限与 `/ml todo` 默认过滤词，持久化在
-  `~/.dsh/settings.yaml` 的 `memoryleak:` 段，支持多窗口乐观并发。
-- **`/ml todo list` 命令**：扫描当前工作区 Markdown 文件中的待办
-  （`- [ ] 未完成` / `- [x] 已完成`），在命令卡片中按文件分组返回。
-  - 围栏代码块内的任务行不计入；`node_modules`、`.git` 等目录默认排除。
-  - 全部变体见下方「命令与入口一览」表。
+MemoryLeak 是 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)的记事本插件：把「随手记一笔」和「结构化待办」放进你的**工作区本身**（Markdown 文件），而不是某个应用的数据库里。所有操作都是斜杠命令——不经过 LLM，零 token，毫秒级。
+
+核心场景：
+
+- **记一笔**：`/ml 修好了登录页的样式` —— 写进工作区根目录的日志（`2026-08-16.md`）或周志（`2026W33.md`）的 `## MemoryLeak` 模块
+- **待办管理**：`/ml todo add`（固定表单选类型/优先级）→ `/ml todo list`（sleep 型到日自动唤醒）→ `/ml todo d 3`（按序号完成）/ `u`（撤销）
+- **快速查看**：`/ml view <片段>` 模糊匹配打开任意工作区文件；手动输入时输入框上方弹**实时候选卡**（↑↓/Tab/Enter，VSCode Ctrl+P 手感）
 
 ## 命令与入口一览
 
@@ -21,7 +22,7 @@
 | `/ml help`（或 `h`） | 命令一览：全部命令与效果的汇总说明（命令菜单里的注册描述也导向这里） | **0** |
 | `/ml <文本>` | 记一笔：写入工作区根目录的日志/周志 `## MemoryLeak` 模块（不存在则按模板新建文件） | **0**（命令面，不过模型） |
 | `/ml view [文件名片段]`（或 `v`） | 快速查看：无参数 = 当前日志/周志；带片段 = VSCode Ctrl+P 风格模糊匹配工作区文件（唯一强匹配直接打开，多候选列出供加长片段消歧） | **0** |
-| 手动输入 `/ml view <片段>` | **实时候选卡**：输入框上方弹出过滤候选（焦点留在输入框，打字即过滤），↑↓ 切换高亮（默认第 1 项）、Tab 补全文件名进草稿、Enter 直接打开高亮项、Esc 关闭 | **0** |
+| 手动输入 `/ml view <片段>` | **实时候选卡**：输入框上方弹出过滤候选（焦点留在输入框，打字即过滤），**当前日志/周志默认置顶**（标「· 当前」），↑↓ 切换高亮、Tab 补全文件名进草稿、Enter 直接打开高亮项、Esc 关闭 | **0** |
 | 命令菜单选中 `/ml` | **快速打开面板**（popupSelect）：同款候选卡，弹窗内搜索、Enter 打开 | **0** |
 | `/ml todo add <文本>`（或 `n`） | 加结构化待办：固定格式提问类型（deadline/sleep/anytime）与重要程度（紧急/中等/低），deadline/sleep 再问日期；写入日志/周志的 `## Todo` 模块（建在 `## MemoryLeak` 之后） | **0**（提问为固定表单，不过模型） |
 | `/ml todo list`（或 `l`） | 扫描当前工作区 Markdown 待办（默认过滤可在设置改），**默认隐藏未唤醒的 sleep 型**，按文件分组返回；**到日的 sleep 自动唤醒**（源文件转写为 active）并显示 ☀ 计数；每条带序号，供 `d <n>` 寻址 | **0**（命令面，不过模型） |
@@ -32,22 +33,35 @@
 | `/ml todo` | 省略操作默认 `l`，等价 `/ml todo l` | **0** |
 | 设置窗口「MemoryLeak」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词、日志模式与模板（`/api/memoryleak/*` HTTP 路由） | **0** |
 
-> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。文件创建与写入是纯本地字符串操作，`/ml todo add` 的提问走 userQuestions 固定表单，均不涉 LLM。命令卡片通过 `conversation.chat.commandview`（key=ml）默认展开显示（命令回显 + 主题样式正文块），无需点击。
->
-> 日志/周志约定：日志模式写入 `yyyy-mm-dd.md`，记录为模块下的一行 `- 文本`；周志模式写入 `yyyyWww.md`（ISO 周，模板默认带 `start:`/`end:` 配置），记录按日期分组 `- yyyy-mm-dd` → 子项 `  - 文本`。`todo` 是保留字——记录文本以 todo 开头时请换措辞。
->
-> 结构化待办格式（`## Todo` 模块内，`/ml todo` 系列的读写契约）：
->
-> ```
-> - [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿   ← 截止型：固定终结日
-> - [ ] (ml:sleep 2026-12-01 low) 学一遍内部源码      ← 睡眠型：到日唤醒（唤醒日前 list 默认不显示）
-> - [ ] (ml:anytime medium) 整理收藏夹                ← 随时型：无日期
-> - [x] (ml:active low) 复盘一次上线                  ← 唤醒型：sleep 到日唤醒后的落盘形态
-> ```
->
-> 徽章展示形如 `[截止 2026-09-01·紧急]`；属性块损坏的行自动降级为普通待办（不丢数据）。`/ml todo list` 时到日的 sleep 行会在源文件中转写为 active（按 文件+行号+原文 三重校验，行已变化则跳过），列表尾部显示 `☀ 已唤醒 N 条`。
->
-> 已知行为（DSH 上游设计，非本插件缺陷）：**新会话在发出第一条 LLM 消息前处于 blank 状态，不挂载对话时间线**——此时执行 `/ml`，结果不会立即显示（官方 `/plan`、`/goal` 同样如此）；发出第一条消息后，历史命令卡片会随时间线一起补显。命令事件已持久化，不会丢失。
+## 日志与待办的文件格式
+
+日志/周志（按设置的「日志模式」选择）：
+
+```markdown
+start: 2026-08-10          ← 仅周志模板默认带（ISO 周一起止）
+end: 2026-08-16
+
+## MemoryLeak              ← /ml <文本> 的记录区（无则自动创建）
+- 上午重构了扫描器
+- 下午修了候选卡错位
+
+## Todo                    ← /ml todo add 的落点（永远在 MemoryLeak 之后）
+- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿
+- [ ] (ml:sleep 2026-12-01 low) 学一遍内部源码
+- [ ] (ml:anytime medium) 整理收藏夹
+- [x] (ml:active low) 复盘一次上线
+```
+
+结构化待办四种类型（`## Todo` 模块内，`/ml todo` 系列的读写契约）：
+
+| 类型 | 日期 | 行为 |
+| --- | --- | --- |
+| `deadline` | 必填 | 固定截止日，列表徽章 `[截止 2026-09-01·紧急]` |
+| `sleep` | 必填 | 唤醒日前 `list` 默认隐藏；到日（含当天）自动唤醒 |
+| `anytime` | 无 | 随时记录，徽章 `[随时·中等]` |
+| `active` | 无 | sleep 唤醒后的落盘形态（`list` 时源文件转写，三重校验防误写），徽章 `[唤醒·低]` |
+
+优先级：`urgent`（紧急）/ `medium`（中等）/ `low`（低）。属性块损坏的行自动降级为普通待办（不丢数据）。
 
 ## 安装（本机 DSH）
 
@@ -56,21 +70,36 @@ dsh plugin --profile web add link:<本仓库路径>
 # 重启 dsh web 后生效；卸载：dsh plugin --profile web remove dsh-memoryleak
 ```
 
+改动生效方式：
+
+| 改动位置 | 生效方式 |
+| --- | --- |
+| `src/client.js`（浏览器半） | client-hmr 自动热重载（几秒），或刷新页面 |
+| `src/index.js`、`src/core/`、路由、schema（宿主半） | **必须重启 `dsh web`** |
+| `package.json` bundles / `cordis.patch.yml` | 必须重启 `dsh web` |
+
 ## 架构一览
 
 ```
-src/core/      纯域（零依赖，vitest 直测）
-  formats/       Strategy：单行待办格式解析（markdown-checkbox）
-  registry.js    Registry：注册期契约校验 + priority + 可逆注册
-  filter.js      Specification：TodoQuery（数据 + 谓词）
-  file-source.js Port：FileSource 契约（DIP）
-  scan.js        扫描器：Registry + FileSource → 冻结的 ScanReport
-  render.js      文本渲染（命令卡片）+ JSON 渲染（AI 预留契约）
-  journal.js     日志/周志：ISO 周、模板渲染、## MemoryLeak 插入算法（纯函数）
-src/adapters/  node（真实 fs）/ memory（测试·预览）双适配器
-src/journal.js 宿主胶水：定位文件 → 读/模板建 → 插入 → 写回（无 LLM）
-src/index.js   宿主半：/ml 命令 · memoryleak 设置命名空间 · /api/memoryleak/* 路由
-src/client.js  浏览器半：设置窗口（settings.section 槽位）
+src/core/       纯域（零依赖，vitest 直测）
+  errors.js       Typed errors + let-it-crash invariant
+  todo-item.js    Value Object：构造即校验、构造即冻结（含 meta）
+  formats/        Strategy：markdown-checkbox + memoryleak-todo（结构化）
+  registry.js     Registry：注册期契约校验 + priority + 可逆注册
+  filter.js       Specification：TodoQuery（status/text/today/sleep 谓词）
+  fuzzy.js        模糊匹配：子序列评分 DP + resolveViewTarget 四态解析
+  journal.js      日志/周志：ISO 周、模板渲染、模块插入、行切换/替换（纯函数）
+  file-source.js  Port：FileSource 契约（DIP）
+  walk-policy.js  共享遍历策略（node/memory 同语义）
+  scan.js         扫描器：Registry + FileSource → 冻结的 ScanReport
+  render.js       渲染器：TUI 文本（命令卡片）+ JSON（AI 预留契约）
+  command.js      /ml 文法（journal/todo/view/help 四家族）+ renderMlHelp
+src/adapters/   node（真实 fs）/ memory（测试·预览）双适配器
+src/settings-schema.js  schemastery schema + 默认值（settings.yaml 段）
+src/journal.js  宿主胶水：定位/读建/写回、唤醒转写、行切换、文件清单
+src/routes.js   /api/memoryleak/* 同源 JSON 桥（settings/formats/files）
+src/index.js    宿主半：组装根（/ml 命令、设置命名空间、路由）
+src/client.js   浏览器半：设置窗口 + 命令卡片展开视图 + 实时候选卡
 ```
 
 设计模式与 let-it-crash 故障分级见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
@@ -79,15 +108,23 @@ src/client.js  浏览器半：设置窗口（settings.section 槽位）
 
 ```bash
 pnpm install
-pnpm test          # vitest 全量测试
+pnpm test            # vitest 全量（240 个）
 pnpm run test:watch
 ```
 
-## 为 AI 预留的接缝（V1 已就位、暂未启用）
+- 纯域零依赖直测；适配器跑真实 tmpdir；宿主半用伪 ctx 端到端
+- 回归守卫：宿主源码所有 `ctx.<service>` 访问逐一断言在 inject 声明中（Guard 缺口桩测不出，静态锁死）
+- 每个 bug 一个回归测试；提交信息 `<scope>: <what>`
+
+## 为 AI 预留的接缝（已就位、暂未启用）
 
 - 新待办格式 = 新 `TodoFormat` Strategy，注册即生效，扫描器零改动；
 - 结构化消费 = `renderTodoJson(report, query)` 的稳定 JSON 契约；
-- 结构化过滤 = `TodoQuery`（action/status/text/limit）数据模型。
+- 结构化过滤 = `TodoQuery`（action/status/text/limit/today）数据模型。
+
+## 已知行为
+
+**新会话 blank 状态**（DSH 上游设计，非本插件缺陷）：发出第一条 LLM 消息前会话不挂载对话时间线——此时执行 `/ml`，结果不会立即显示（官方 `/plan`、`/goal` 同样如此）；发出第一条消息后，历史命令卡片随时间线补显。命令事件已持久化，不会丢失。
 
 ## License
 

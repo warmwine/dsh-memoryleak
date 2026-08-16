@@ -566,7 +566,7 @@ describe('/ml view 模糊解析（多文件场景，端到端）', () => {
     expect(resolved.text.startsWith('2026-08-15.md\n')).toBe(true)
   })
 
-  it('GET /files：按会话定位工作区，返回文件清单（名字降序）', async () => {
+  it('GET /files：按会话定位工作区，返回文件清单（名字降序）+ 当前日志名', async () => {
     host.sessions.set('agent-fuzzy-test', { header: { cwd: fuzzyWs } })
     const route = host.routes.find((entry) => entry.path === '/api/memoryleak/files')
     const ok = await invokeRoute(route, 'GET', undefined, `${route.path}?session=agent-fuzzy-test&limit=10`)
@@ -576,6 +576,7 @@ describe('/ml view 模糊解析（多文件场景，端到端）', () => {
     expect(names).toContain('2026-08-16.md')
     expect(names).toContain('docs/plan.md')
     expect(names[0]).toBe('docs/plan.md') // 降序：docs/ > 2026W33 > 2026-08-16
+    expect(ok.body.current).toBe(`${formatDate(new Date())}.md`) // daily 模式的当前日志
     // 无 session → 400
     const noSession = await invokeRoute(route, 'GET', undefined, route.path)
     expect(noSession.status).toBe(400)
