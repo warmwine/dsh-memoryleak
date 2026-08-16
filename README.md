@@ -1,13 +1,14 @@
 # dsh-memoryleak —— DSH MemoryLeak 插件
 
-> MemoryLeak：数据模型优先、格式可扩展、问题尽早暴露。
-> 一切走命令面：**零 token、不进模型历史、不影响 KV cache**。
+> MemoryLeak：本地知识库/笔记本插件，数据模型优先、格式可扩展。
+> 好记性不如烂笔头，有了memoryleak你就不会memoryleak
+> 实现大量工具对知识库和本地笔记本进行管理，本地文件优先
 
-[English](README.md) · 更新历史见 [CHANGELOG.md](CHANGELOG.md) · 开发要则见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+更新历史见 [CHANGELOG.md](CHANGELOG.md)
 
 ## 这是什么
 
-MemoryLeak 是 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)的记事本插件：把「随手记一笔」和「结构化待办」放进你的**工作区本身**（Markdown 文件），而不是某个应用的数据库里。所有操作都是斜杠命令——不经过 LLM，零 token，毫秒级。
+MemoryLeak 是 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness)的记事本插件：把「随手记一笔」和「结构化待办」放进你的**工作区本身**（Markdown 文件），而不是某个应用的数据库里。绝大多数操作都是斜杠命令——不经过 LLM，零 token，毫秒级。
 
 核心场景：
 
@@ -70,13 +71,11 @@ dsh plugin --profile web add link:<本仓库路径>
 # 重启 dsh web 后生效；卸载：dsh plugin --profile web remove dsh-memoryleak
 ```
 
-改动生效方式：
-
-| 改动位置                                            | 生效方式                                  |
-| --------------------------------------------------- | ----------------------------------------- |
-| `src/client.js`（浏览器半）                         | client-hmr 自动热重载（几秒），或刷新页面 |
-| `src/index.js`、`src/core/`、路由、schema（宿主半） | **必须重启 `dsh web`**                    |
-| `package.json` bundles / `cordis.patch.yml`         | 必须重启 `dsh web`                        |
+## 安装 (Github)
+```bash
+dsh plugin --profile web add github:warmwine/dsh-memoryleak
+# 重启 dsh web 后生效；卸载：dsh plugin --profile web remove dsh-memoryleak
+```
 
 ## 架构一览
 

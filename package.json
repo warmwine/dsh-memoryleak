@@ -24,7 +24,8 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
+  "dependencies": {},
+  "peerDependencies": {
     "schemastery": "^3.18.0"
   },
   "devDependencies": {
@@ -40,11 +41,21 @@
     "dsh-plugin",
     "notes",
     "todo",
-    "markdown"
+    "markdown",
+    "journal",
+    "memory"
+  ],
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "docs",
+    "LICENSE"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/example/dsh-memoryleak.git"
+    "url": "git+https://github.com/warmwine/dsh-memoryleak.git"
   },
   "license": "MIT"
 }
