@@ -26,6 +26,8 @@
 | 设置窗口「记忆泄露」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词（`/api/memoryleak/*` HTTP 路由） | **0** |
 
 > 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。
+>
+> 已知行为（DSH 上游设计，非本插件缺陷）：**新会话在发出第一条 LLM 消息前处于 blank 状态，不挂载对话时间线**——此时执行 `/ml`，结果不会立即显示（官方 `/plan`、`/goal` 同样如此）；发出第一条消息后，历史命令卡片会随时间线一起补显。命令事件已持久化，不会丢失。
 
 ## 安装（本机 DSH）
 
