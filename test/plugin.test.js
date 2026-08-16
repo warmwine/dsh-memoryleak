@@ -166,7 +166,7 @@ describe('宿主插件装配（apply）', () => {
     expect(command).toBeDefined()
     // 注册描述保持短并导向 /ml help（汇总说明统一由 help 提供）
     expect(command.description).toBe('MemoryLeak 记事本 · 输入 /ml help 查看全部命令')
-    expect(command.input.hint).toBe('<文本> / todo 子命令 / help')
+    expect(command.input.hint).toBe('<文本> / todo 子命令 / view / help')
   })
 
   it('/ml help：返回汇总说明（无需工作区绑定）', async () => {
@@ -176,7 +176,7 @@ describe('宿主插件装配（apply）', () => {
       signal: new AbortController().signal,
     })
     expect(result.kind).toBe('success')
-    for (const fragment of ['/ml <文本>', '/ml todo n', '/ml todo l', '/ml todo d', '/ml todo u', '/ml help']) {
+    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo u', '/ml view', '/ml help']) {
       expect(result.text).toContain(fragment)
     }
   })
@@ -411,6 +411,71 @@ describe('/ml <文本> 日志记录（端到端）', () => {
     })
     expect(result.kind).toBe('error')
     expect(result.text).toMatch(/日志写入失败|工作区/)
+  })
+})
+
+describe('/ml view（端到端）', () => {
+  const host = createFakeHost()
+  let command
+  let viewWs
+
+  beforeAll(async () => {
+    apply(host.ctx)
+    command = host.commands.find((definition) => definition.name === 'ml')
+    viewWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-view-'))
+  })
+
+  afterAll(async () => {
+    await rm(viewWs, { recursive: true, force: true })
+  })
+
+  const run = (rawInput) =>
+    command.handler({
+      agent: { id: 'agent-view-test', session: { header: { cwd: viewWs } } },
+      rawInput,
+      signal: new AbortController().signal,
+    })
+
+  it('文件未创建 → 友好提示（不创建文件）', async () => {
+    const daily = `${formatDate(new Date())}.md`
+    const result = await run('view')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain(`尚未创建：${daily}`)
+    expect(result.text).toContain('按模板自动创建')
+    expect(await readFile(join(viewWs, daily), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  it('记录后 → 显示文件名与内容', async () => {
+    await run(' 第一条记录')
+    const daily = `${formatDate(new Date())}.md`
+    const result = await run('view')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain(`${daily}（日志）`)
+    expect(result.text).toContain('## MemoryLeak')
+    expect(result.text).toContain('- 第一条记录')
+  })
+
+  it('v 别名等价', async () => {
+    const result = await run('v')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('（日志）')
+  })
+
+  it('weekly 模式 → 定位周志文件（未创建则提示）', async () => {
+    await host.settings.replace('memoryleak', { journalMode: 'weekly' })
+    const weekFile = weeklyFileName(new Date())
+    const result = await run('view')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain(`尚未创建：${weekFile}`)
+    // daily 文件仍在，但 weekly 模式下 view 只看周志
+    expect(result.text).not.toContain('第一条记录')
+  })
+
+  it('带参数是用法错误', async () => {
+    const result = await run('view 2026-08-01')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('/ml view')
+    expect(result.text).toContain('无参数')
   })
 })
 

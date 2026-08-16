@@ -31,7 +31,7 @@ import { parseMlArgs, renderMlHelp } from './core/command.js'
 import { applyTodoQuery, createTodoQuery } from './core/filter.js'
 import { renderTodoText } from './core/render.js'
 import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
-import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt } from './journal.js'
+import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt, readJournalFile } from './journal.js'
 
 /** 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。 */
 export const name = 'memoryleak'
@@ -76,7 +76,7 @@ export function apply(ctx) {
       ctx.commands.register({
         name: 'ml',
         description: 'MemoryLeak 记事本 · 输入 /ml help 查看全部命令',
-        input: { hint: '<文本> / todo 子命令 / help' },
+        input: { hint: '<文本> / todo 子命令 / view / help' },
         handler: wrappedHandler,
       }),
     'memoryleak: /ml command',
@@ -103,6 +103,14 @@ export function apply(ctx) {
       const where = record.mode === 'weekly' ? `## MemoryLeak · ${record.date}` : '## MemoryLeak'
       const suffix = record.created ? '（新建文件）' : ''
       return { kind: 'success', text: `已记录 → ${record.file} ${where}${suffix}\n- ${record.note}` }
+    }
+    if (parsed.family === 'view') {
+      const journal = await readJournalFile({ cwd, settings })
+      if (!journal.exists) {
+        return { kind: 'success', text: `尚未创建：${journal.file}\n（首次 /ml 记录或 /ml todo add 时按模板自动创建）` }
+      }
+      const modeLabel = journal.mode === 'weekly' ? '周志' : '日志'
+      return { kind: 'success', text: `${journal.file}（${modeLabel}）\n${'─'.repeat(44)}\n${journal.content.replace(/\n$/, '')}` }
     }
     if (parsed.action === 'add') {
       return addTodoFlow(agent, cwd, settings, parsed.text, signal)

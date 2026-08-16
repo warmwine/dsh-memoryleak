@@ -47,22 +47,32 @@ describe('parseMlArgs（/ml 文法）', () => {
       expect(parseMlArgs('  help  ')).toEqual({ family: 'help' })
     })
 
-    it('renderMlHelp 覆盖全部已注册命令', () => {
+    it('renderMlHelp 覆盖全部已注册命令（全称与简写都可搜到）', () => {
       const help = renderMlHelp()
       for (const fragment of [
         '/ml <文本>',
-        '/ml todo n <待办内容>',
-        'add 同义',
-        '/ml todo l [all|open|done] [关键词]',
-        'list 同义',
+        '/ml todo add <待办内容>',
+        '/ml todo n',
+        '/ml todo list [all|open|done] [关键词]',
+        '/ml todo l',
         '/ml todo d <序号>',
         '/ml todo u',
+        '/ml view',
+        '/ml v',
         '/ml help',
       ]) {
         expect(help).toContain(fragment)
       }
       // 帮助里不该出现未实现的命令
-      expect(help).not.toMatch(/\/ml todo (?!n|l|d|u)\w+/)
+      expect(help).not.toMatch(/\/ml todo (?!add|list|n|l|d|u|done|undo)\w+/)
+    })
+
+    it('view / v：显示当前日志（无参数）', () => {
+      expect(parseMlArgs('view')).toEqual({ family: 'view' })
+      expect(parseMlArgs('v')).toEqual({ family: 'view' })
+      expect(parseMlArgs('  view  ')).toEqual({ family: 'view' })
+      expect(() => parseMlArgs('view 2026-08-01')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('view 2026-08-01')).toThrow(/无参数/)
     })
   })
 
@@ -74,6 +84,7 @@ describe('parseMlArgs（/ml 文法）', () => {
       ['list 现在是普通文本', 'list 现在是普通文本'],
       ['note new', 'note new'],
       ['helps 是普通文本（复数不保留）', 'helps 是普通文本（复数不保留）'],
+      ['views 是普通文本（复数不保留）', 'views 是普通文本（复数不保留）'],
     ])('%j → 记录 %j', (input, text) => {
       expect(parseMlArgs(input)).toEqual({ family: 'journal', text })
     })
@@ -86,7 +97,7 @@ describe('parseMlArgs（/ml 文法）', () => {
   })
 
   it('用法文案覆盖全部入口', () => {
-    for (const fragment of ['/ml <文本>', '/ml todo n', '/ml todo l', '/ml todo d', '/ml todo u', '/ml help']) {
+    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo u', '/ml view', '/ml help']) {
       expect(ML_USAGE).toContain(fragment)
     }
   })

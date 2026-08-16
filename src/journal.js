@@ -103,6 +103,29 @@ async function writeJournal(located, next) {
 }
 
 /**
+ * 只读定位当前日志/周志文件（/ml view 用）：不存在时不创建，仅报告。
+ *
+ * @param {object} input
+ * @param {string} input.cwd
+ * @param {object} input.settings
+ * @param {() => Date} [input.now]
+ * @returns {Promise<{ file: string, mode: 'daily' | 'weekly', exists: boolean, content: string }>}
+ */
+export async function readJournalFile({ cwd, settings, now = () => new Date() }) {
+  const mode = settings.journalMode === 'weekly' ? 'weekly' : 'daily'
+  const at = now()
+  const file = mode === 'weekly' ? weeklyFileName(at) : dailyFileName(at)
+  const path = join(cwd, file)
+  try {
+    const content = await readFile(path, 'utf8')
+    return { file, mode, exists: true, content }
+  } catch (error) {
+    if (error.code === 'ENOENT') return { file, mode, exists: false, content: '' }
+    throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+}
+
+/**
  * 唤醒转写：把扫描报告中已到唤醒日、未完成的 sleep 待办在源文件里改写为
  * active（按 文件+行号+raw 三重校验，行变化即跳过该条）。单文件故障隔离
  * —— 一个文件写失败不影响其余，计入 failures 返回。
