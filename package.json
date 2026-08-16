@@ -1,61 +1,61 @@
 {
-  "name": "dsh-memoryleak",
-  "version": "0.11.0",
-  "description": "DSH MemoryLeak 插件：/ml help 查看全部命令。/ml <文本> 记一笔到日志/周志；/ml view [片段] 快速查看（实时候选卡：当前日志置顶，↑↓/Tab 补全/Enter 打开）；/ml todo add 固定表单加结构化待办；/ml todo list 列待办（sleep 到日唤醒）；/ml todo d/u 切换与撤销。全程无 LLM、零 token。",
-  "type": "module",
-  "main": "src/index.js",
-  "exports": {
-    ".": "./src/index.js",
-    "./client": "./src/client.js",
-    "./core": "./src/core/index.js",
-    "./settings-schema": "./src/settings-schema.js",
-    "./package.json": "./package.json"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
+    "name": "dsh-memoryleak",
+    "version": "0.10.1",
+    "description": "Notes and todos as plain Markdown in your DSH workspace: /ml jots into today's journal, todos come in deadline/sleep-until/anytime flavors with auto-wakeup, /ml view fuzzy-opens any file — zero-token slash commands, notes stay plain files.",
+    "type": "module",
+    "main": "src/index.js",
+    "exports": {
+        ".": "./src/index.js",
+        "./client": "./src/client.js",
+        "./core": "./src/core/index.js",
+        "./settings-schema": "./src/settings-schema.js",
+        "./package.json": "./package.json"
     },
-    "client": {
-      "inject": [],
-      "platform": "web"
-    }
-  },
-  "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "dependencies": {},
-  "peerDependencies": {
-    "schemastery": "^3.18.0"
-  },
-  "devDependencies": {
-    "vitest": "^3.2.4"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "keywords": [
-    "deepseek",
-    "harness",
-    "dsh",
-    "dsh-plugin",
-    "notes",
-    "todo",
-    "markdown",
-    "journal",
-    "memory"
-  ],
-  "files": [
-    "src",
-    "cordis.patch.yml",
-    "README.md",
-    "CHANGELOG.md",
-    "docs",
-    "LICENSE"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/warmwine/dsh-memoryleak.git"
-  },
-  "license": "MIT"
+    "dsh": {
+        "bundle": {
+            "patch": "./cordis.patch.yml"
+        },
+        "client": {
+            "inject": [],
+            "platform": "web"
+        }
+    },
+    "scripts": {
+        "test": "vitest run",
+        "test:watch": "vitest"
+    },
+    "dependencies": {},
+    "peerDependencies": {
+        "schemastery": "^3.18.0"
+    },
+    "devDependencies": {
+        "vitest": "^3.2.4"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "keywords": [
+        "deepseek",
+        "harness",
+        "dsh",
+        "dsh-plugin",
+        "notes",
+        "todo",
+        "markdown",
+        "journal",
+        "memory"
+    ],
+    "files": [
+        "src",
+        "cordis.patch.yml",
+        "README.md",
+        "CHANGELOG.md",
+        "docs",
+        "LICENSE"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/warmwine/dsh-memoryleak.git"
+    },
+    "license": "MIT"
 }
