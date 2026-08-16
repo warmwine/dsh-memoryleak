@@ -339,8 +339,203 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /* ---------------- /ml view 实时候选卡（combobox 模式）----------------
+       官方 popupSelect 只在「从命令菜单选中 /ml」时触发；手动输入
+       `/ml view <片段>` 不经过菜单。此卡监听输入草稿：一旦匹配
+       /^\/ml\s+(view|v)\b/ 就在输入框上方弹出实时候选（焦点留在输入框，
+       继续打字继续过滤）。键盘在 capture 阶段拦截：
+         ↑↓ 切换高亮（默认第 1 项，紧贴提示行）
+         Tab  把高亮文件名补全进草稿
+         Enter 直接执行 /ml view <高亮文件>（成功后清空输入框）
+         Esc  关闭（草稿变化后重新触发）
+       候选来自宿主 /api/memoryleak/files（按会话缓存 5s），本地子序列
+       过滤排序 —— 最终裁决仍在宿主（Enter 未拦截时走正常命令提交）。 */
+    const QUICK_OPEN_RE = /^\/ml[ \t]+(?:view|v)(?:[ \t]+(\S*))?[ \t]*$/i;
+    const QUICK_OPEN_CACHE = new Map(); // sessionId → { at, names }
+    const QUICK_OPEN_TTL = 5000;
+    const QUICK_OPEN_MAX_ROWS = 12;
+
+    /** 轻量子序列评分（client 内联版；边界+3/连续+4/跳过-0.1，与宿主 core/fuzzy 同语义）。 */
+    function quickScore(name, query) {
+      const n = String(name ?? "").toLowerCase();
+      const q = String(query ?? "").toLowerCase();
+      if (q === "") return 0;
+      if (q.length > n.length) return null;
+      let best = -Infinity;
+      // 单查询串的贪心前向对齐已足够排序提示用途；最优 DP 在宿主侧。
+      let qi = 0;
+      let score = 0;
+      let prevHit = -2;
+      for (let ni = 0; ni < n.length && qi < q.length; ni += 1) {
+        if (n.charAt(ni) !== q.charAt(qi)) {
+          score -= 0.1;
+          continue;
+        }
+        score += 1;
+        if (ni === 0 || "-_./".includes(n.charAt(ni - 1))) score += 3;
+        if (ni === prevHit + 1) score += 4;
+        prevHit = ni;
+        qi += 1;
+      }
+      if (qi < q.length) return null;
+      return score * 10 - n.length;
+    }
+
+    function QuickOpenOverlay({ shell, sessionId, execute }) {
+      const state = React.useSyncExternalStore(
+        (fn) => shell.state.subscribe(fn),
+        () => shell.state.getSnapshot()
+      );
+      const draft = state !== null && typeof state === "object" && typeof state.draft === "string" ? state.draft : "";
+      const match = QUICK_OPEN_RE.exec(draft);
+      const fragment = match === null ? "" : (match[1] ?? "");
+      const open = match !== null;
+
+      const [names, setNames] = React.useState(null); // null = 加载中
+      const [error, setError] = React.useState(null);
+      const [active, setActive] = React.useState(0);
+      const [dismissedDraft, setDismissedDraft] = React.useState(null);
+      const dismissed = dismissedDraft !== null && dismissedDraft === draft;
+      const visible = open && !dismissed;
+
+      React.useEffect(() => {
+        if (!visible) return;
+        let cancelled = false;
+        const cached = QUICK_OPEN_CACHE.get(sessionId);
+        if (cached !== undefined && Date.now() - cached.at < QUICK_OPEN_TTL) {
+          setNames(cached.names);
+          setError(null);
+          return undefined;
+        }
+        setNames(null);
+        setError(null);
+        fetch(`${API}/files?session=${encodeURIComponent(sessionId)}&limit=50`)
+          .then((res) => res.json())
+          .then((body) => {
+            if (cancelled) return;
+            if (body.ok !== true) throw new Error(body.error || "HTTP " + res.status);
+            const list = Array.isArray(body.files) ? body.files.map((file) => file.name) : [];
+            QUICK_OPEN_CACHE.set(sessionId, { at: Date.now(), names: list });
+            setNames(list);
+          })
+          .catch((e) => {
+            if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+          });
+        return () => { cancelled = true; };
+      }, [visible, sessionId]);
+
+      const rows = React.useMemo(() => {
+        if (names === null) return [];
+        if (fragment === "") return names.slice(0, QUICK_OPEN_MAX_ROWS).map((name) => ({ name, score: 0 }));
+        const scored = [];
+        for (const name of names) {
+          const score = quickScore(name, fragment);
+          if (score !== null) scored.push({ name, score });
+        }
+        scored.sort((left, right) => (right.score - left.score) || (left.name < right.name ? -1 : 1));
+        return scored.slice(0, QUICK_OPEN_MAX_ROWS);
+      }, [names, fragment]);
+
+      React.useEffect(() => { setActive(0); }, [fragment]);
+
+      const pick = React.useCallback((name) => {
+        execute(sessionId, `/ml view ${name}`).then(() => {
+          shell.setDraft("");
+        }, (e) => {
+          shell.notify("error", e instanceof Error ? e.message : String(e));
+        });
+      }, [sessionId, shell, execute]);
+
+      React.useEffect(() => {
+        if (!visible || rows.length === 0) return undefined;
+        const onKey = (ev) => {
+          if (ev.isComposing === true) return;
+          const target = ev.target;
+          const tag = target !== null && typeof target === "object" ? target.tagName : "";
+          if (tag !== "TEXTAREA" && tag !== "INPUT") return;
+          if (ev.key === "ArrowDown") {
+            ev.preventDefault(); ev.stopPropagation();
+            setActive((index) => Math.min(index + 1, rows.length - 1));
+          } else if (ev.key === "ArrowUp") {
+            ev.preventDefault(); ev.stopPropagation();
+            setActive((index) => Math.max(index - 1, 0));
+          } else if (ev.key === "Tab") {
+            ev.preventDefault(); ev.stopPropagation();
+            shell.setDraft(`/ml view ${rows[active].name}`);
+          } else if (ev.key === "Enter") {
+            ev.preventDefault(); ev.stopPropagation();
+            pick(rows[active].name);
+          } else if (ev.key === "Escape") {
+            ev.preventDefault(); ev.stopPropagation();
+            setDismissedDraft(draft);
+          }
+        };
+        document.addEventListener("keydown", onKey, true);
+        return () => document.removeEventListener("keydown", onKey, true);
+      }, [visible, rows, active, shell, draft, pick]);
+
+      if (!visible) return null;
+
+      const hint = "↑↓ 选择 · Tab 补全 · Enter 打开 · Esc 关闭";
+      const cardStyle = {
+        border: "1px solid var(--dsw-alias-border-l1)",
+        background: "var(--dsw-alias-bg-base)",
+        borderRadius: 12,
+        marginBottom: 6,
+        maxHeight: 280,
+        overflowY: "auto",
+        boxShadow: "var(--dsw-shadow-lv2, 0 4px 16px rgba(0,0,0,.12))",
+      };
+      const hintStyle = {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: 11,
+        padding: "5px 12px 3px",
+        borderBottom: "1px solid var(--dsw-alias-border-l1)",
+        position: "sticky",
+        top: 0,
+        background: "var(--dsw-alias-bg-base)",
+      };
+      const rowStyle = (isActive) => ({
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "5px 12px",
+        fontSize: 13,
+        cursor: "pointer",
+        background: isActive ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+        color: "var(--dsw-alias-label-primary)",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      });
+      const metaStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, flex: "0 0 auto" };
+
+      let body;
+      if (error !== null) {
+        body = React.createElement("div", { style: { ...hintStyle, borderBottom: "none", color: "var(--dsw-alias-state-error-primary)" } }, `候选加载失败：${error}`);
+      } else if (names === null) {
+        body = React.createElement("div", { style: { ...hintStyle, borderBottom: "none" } }, "正在加载候选…");
+      } else if (rows.length === 0) {
+        body = React.createElement("div", { style: { ...hintStyle, borderBottom: "none" } }, `没有匹配「${fragment}」的文件（回车将按宿主解析执行）`);
+      } else {
+        body = rows.map((row, index) => React.createElement("div", {
+          key: row.name,
+          style: rowStyle(index === active),
+          role: "option",
+          "aria-selected": index === active,
+          onMouseDown: (ev) => { ev.preventDefault(); pick(row.name); },
+          onMouseEnter: () => { setActive(index); },
+        },
+          React.createElement("span", null, row.name),
+          React.createElement("span", { style: metaStyle }, String(index + 1))));
+      }
+      return React.createElement("div", { style: cardStyle, "data-ml-quick-open": "1" },
+        React.createElement("div", { style: hintStyle }, hint),
+        body);
+    }
+
     /* ---------------- 插件入口 ---------------- */
-    const inject = ["slots", "commandUi", "remote", "remote.commands"];
+    const inject = ["slots", "commandUi", "remote", "remote.commands", "conversation", "sessions"];
 
     function apply(ctx) {
       // 设置窗口：GUI 设置面板中的一个「MemoryLeak」分区（与字体设置页同款槽位）。
@@ -363,6 +558,29 @@ window.__ModuleLoader__.load({
         available: () => true,
         ui: mlQuickOpenSpec(ctx),
       }), "memoryleak: /ml quick-open popup");
+
+      // 手动输入 /ml view <片段> → 实时候选卡（combobox：焦点留在输入框）。
+      const executeViaHost = async (sessionId, line) => {
+        const result = await ctx.remote.commands.execute(sessionId, line);
+        if (!result.ok) {
+          throw new Error(`执行失败：${result.error?.message ?? result.error?.code ?? "未知错误"}`);
+        }
+      };
+      ctx.slots.inject("conversation.input.overlay", () => ctx.slots.register(
+        {
+          name: "conversation.input.overlay",
+          id: "memoryleak-quick-open",
+          order: 2,
+          inject: (sessionId) => {
+            const actx = ctx.sessions.scope(sessionId);
+            const shell = actx === undefined ? null : ctx.conversation.input.for(actx);
+            return { shell, sessionId, execute: executeViaHost };
+          },
+        },
+        (props) => props !== null && typeof props === "object" && props.shell != null
+          ? React.createElement(QuickOpenOverlay, props)
+          : null
+      ));
     }
 
     exports.apply = apply;
