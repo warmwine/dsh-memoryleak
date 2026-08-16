@@ -2,8 +2,9 @@
  * /ml 命令文法（纯函数，独立测试）。
  *
  * V1 文法（两个家族）：
- *   /ml <文本>                     → 记一笔：写入工作区日志/周志的 ## MemoryLeak
- *   /ml todo [list] [状态] [关键词] → 列出工作区 Markdown 待办
+ *   /ml <文本>                      → 记一笔：写入工作区日志/周志的 ## MemoryLeak
+ *   /ml todo add <文本>             → 添加结构化待办（提问类型/优先级/日期）到 ## Todo
+ *   /ml todo [list] [状态] [关键词]  → 列出工作区 Markdown 待办（默认隐藏未唤醒的 sleep）
  *
  * 家族判定：第一个词是 `todo` 即待办家族（todo 是保留字，记录文本以 todo
  * 开头时请换措辞）；其余一切非空输入都是记录文本。
@@ -15,12 +16,14 @@
 import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
 
-export const ML_USAGE = '/ml <文本>（记一笔） · /ml todo list [all|open|done] [关键词]（列待办）'
+export const ML_USAGE = '/ml <文本>（记一笔） · /ml todo add <文本>（加待办） · /ml todo list [all|open|done] [关键词]（列待办）'
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
  * @returns {{
  *   family: 'journal', text: string
+ * } | {
+ *   family: 'todo', action: 'add', text: string
  * } | {
  *   family: 'todo', action: 'list', status: import('./filter.js').TodoStatus | null, text: string | null
  * }}
@@ -37,6 +40,11 @@ export function parseMlArgs(rawInput) {
   const [family, action, ...rest] = tokens
   if (family !== 'todo') {
     return { family: 'journal', text: tokens.join(' ') }
+  }
+  if (action === 'add') {
+    const text = rest.join(' ')
+    if (text === '') throw new TodoUsageError('用法：/ml todo add <待办内容>')
+    return { family: 'todo', action: 'add', text }
   }
   if (action !== undefined && action !== 'list') {
     throw new TodoUsageError(`未知操作 "${action}"。用法：${ML_USAGE}`)

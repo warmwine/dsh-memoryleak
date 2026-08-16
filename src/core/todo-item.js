@@ -7,6 +7,7 @@
  * @module dsh-memoryleak/core/todo-item
  */
 import { invariant, TodoError } from './errors.js'
+import { isValidTodoMeta } from './formats/memoryleak-todo.js'
 
 /**
  * @typedef {object} TodoItem
@@ -16,6 +17,8 @@ import { invariant, TodoError } from './errors.js'
  * @property {boolean} done 是否已完成
  * @property {string} format 识别它的格式 Strategy id
  * @property {string | null} raw 原始行（诊断用），可空
+ * @property {{ type: string, date: string | null, prio: string } | null} meta
+ *   结构化元数据（memoryleak-todo 策略携带）；普通待办为 null
  */
 
 /**
@@ -28,16 +31,20 @@ import { invariant, TodoError } from './errors.js'
  * @param {boolean} fields.done
  * @param {string} fields.format
  * @param {string} [fields.raw]
+ * @param {object | null} [fields.meta]
  * @returns {TodoItem}
  */
 export function createTodoItem(fields) {
   invariant(fields !== null && typeof fields === 'object', 'todo item 必须是对象')
-  const { file, line, text, done, format, raw } = fields
+  const { file, line, text, done, format, raw, meta } = fields
   invariant(typeof file === 'string' && file !== '', 'todo item.file 必须是非空字符串')
   invariant(Number.isInteger(line) && line >= 1, `todo item.line 必须是 >=1 的整数（收到 ${String(line)}）`)
   invariant(typeof text === 'string' && text.trim() !== '', `todo item.text 必须是非空字符串（文件 ${file}:${line}）`)
   invariant(typeof done === 'boolean', `todo item.done 必须是布尔值（文件 ${file}:${line}）`)
   invariant(typeof format === 'string' && format !== '', `todo item.format 必须是非空字符串（文件 ${file}:${line}）`)
+  if (meta !== null && meta !== undefined && !isValidTodoMeta(meta)) {
+    throw new TodoError(`todo item.meta 形状非法（文件 ${file}:${line}）`)
+  }
   return Object.freeze({
     file,
     line,
@@ -45,6 +52,7 @@ export function createTodoItem(fields) {
     done,
     format,
     raw: typeof raw === 'string' ? raw : null,
+    meta: meta === null || meta === undefined ? null : Object.freeze({ ...meta }),
   })
 }
 
@@ -57,5 +65,6 @@ export function materializeTodoItem(match, file, line) {
     done: match.done,
     format: match.format,
     raw: match.raw,
+    meta: match.meta ?? null,
   })
 }

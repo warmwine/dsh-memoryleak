@@ -227,3 +227,68 @@ function insertIsolated(lines, at, block) {
   if (at < lines.length && lines[at].trim() !== '') block = [...block, '']
   lines.splice(at, 0, ...block)
 }
+
+/** 识别 `## Todo` 标题（兼容 ##TODO / ##todo / 任意大小写与空格）。 */
+function isTodoHeading(line) {
+  return /^##\s*todo\s*$/i.test(line)
+}
+
+/** 找一个标题模块的结束行（下一个一/二级标题或文件末尾）。 */
+function sectionEndOf(lines, headingIndex) {
+  for (let index = headingIndex + 1; index < lines.length; index += 1) {
+    if (/^#{1,2}\s/.test(lines[index])) return index
+  }
+  return lines.length
+}
+
+/**
+ * 把一行待办（通常是结构化行）插入 ## Todo 模块（纯函数）。
+ *
+ * 规则：模块已存在 → 追加到其列表末尾；不存在 → 创建在 ## MemoryLeak 模块
+ * 之后；## MemoryLeak 也不存在 → 先创建空的 MemoryLeak 模块再挂 Todo 模块
+ * （保持 Todo 永远在 MemoryLeak 之后的不变式）。
+ *
+ * @param {string} content 文件当前内容
+ * @param {string} todoLine 完整的待办行（含 `- [ ]` 前缀）
+ * @returns {string} 新内容
+ */
+export function insertTodoLine(content, todoLine) {
+  invariant(typeof content === 'string', 'insertTodoLine 需要 string 内容')
+  invariant(typeof todoLine === 'string' && todoLine.trim() !== '', 'insertTodoLine 需要非空待办行')
+  const lines = content.split('\n')
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+
+  // 已有 ## Todo：追加
+  const todoIndex = lines.findIndex(isTodoHeading)
+  if (todoIndex !== -1) {
+    const sectionEnd = sectionEndOf(lines, todoIndex)
+    let lastItem = -1
+    for (let index = todoIndex + 1; index < sectionEnd; index += 1) {
+      if (/^- /.test(lines[index])) lastItem = index
+    }
+    if (lastItem !== -1) {
+      lines.splice(endOfItemBlock(lines, lastItem, sectionEnd) + 1, 0, todoLine)
+    } else {
+      insertIsolated(lines, sectionEnd, [todoLine])
+    }
+    return withFinalNewline(lines)
+  }
+
+  // 无 ## Todo：定位 MemoryLeak 模块之后的锚点
+  const mlIndex = lines.findIndex(isSectionHeading)
+  const block = ['## Todo', '', todoLine]
+  if (mlIndex !== -1) {
+    const at = sectionEndOf(lines, mlIndex)
+    if (at > 0 && at < lines.length && lines[at - 1].trim() !== '') block.unshift('')
+    else if (at === lines.length && lines[at - 1].trim() !== '') block.unshift('')
+    lines.splice(at, 0, ...block)
+    return withFinalNewline(lines)
+  }
+
+  // 两者皆无：文件头部（配置块/标题之后）先建 MemoryLeak 再建 Todo
+  const at = firstSectionAnchor(lines)
+  const both = ['', '## MemoryLeak', '', ...block]
+  if (at === 0) both.shift()
+  lines.splice(at, 0, ...both)
+  return withFinalNewline(lines)
+}

@@ -11,6 +11,7 @@
  */
 import { invariant, TodoFormatContractError } from './errors.js'
 import { markdownCheckboxFormat } from './formats/markdown-checkbox.js'
+import { memoryleakTodoFormat, isValidTodoMeta } from './formats/memoryleak-todo.js'
 
 const FORMAT_ID_PATTERN = /^[a-z][a-z0-9-]*$/
 
@@ -92,10 +93,14 @@ export class TodoFormatRegistry {
         typeof match.text === 'string' && match.text.trim() !== '',
         `todo format "${format.id}" parse() 的 match.text 必须是非空字符串`,
       )
+      if (match.meta !== null && match.meta !== undefined && !isValidTodoMeta(match.meta)) {
+        throw new TodoFormatContractError(`todo format "${format.id}" parse() 的 match.meta 形状非法`)
+      }
       return Object.freeze({
         done: match.done,
         text: match.text.trim(),
         raw: typeof match.raw === 'string' ? match.raw : line,
+        meta: match.meta === null || match.meta === undefined ? null : Object.freeze({ ...match.meta }),
         format: format.id,
       })
     }
@@ -104,12 +109,15 @@ export class TodoFormatRegistry {
 }
 
 /**
- * 建立默认注册表（内置 markdown-checkbox）。额外的 Strategy 作为参数注入。
+ * 建立默认注册表（内置 memoryleak-todo + markdown-checkbox）。额外的
+ * Strategy 作为参数注入。memoryleak-todo 优先（priority 50）：结构化行
+ * 优先携带 meta 解析；未命中再落回普通复选框策略。
  *
  * @param {import('./formats/markdown-checkbox.js').TodoFormat[]} [extraFormats]
  */
 export function createDefaultRegistry(extraFormats = []) {
   const registry = new TodoFormatRegistry()
+  registry.register(memoryleakTodoFormat, { priority: 50 })
   registry.register(markdownCheckboxFormat, { priority: 100 })
   for (const format of extraFormats) registry.register(format)
   return registry

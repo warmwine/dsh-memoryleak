@@ -1,7 +1,7 @@
 {
   "name": "dsh-memoryleak",
-  "version": "0.3.1",
-  "description": "DSH MemoryLeak 插件：/ml <文本> 记一笔到工作区日志/周志（## MemoryLeak 模块，模板可配，无 LLM）；/ml todo list 扫描工作区 Markdown 待办。格式引擎可扩展，为 AI 生成/过滤预留查询模型。",
+  "version": "0.4.0",
+  "description": "DSH MemoryLeak 插件：/ml <文本> 记一笔到工作区日志/周志；/ml todo add 固定表单添加结构化待办（deadline/sleep/anytime × 紧急/中等/低，写入 ## Todo）；/ml todo list 列待办（sleep 型到日唤醒）。全程无 LLM、零 token。",
   "type": "module",
   "main": "src/index.js",
   "exports": {

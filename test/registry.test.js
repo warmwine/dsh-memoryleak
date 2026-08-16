@@ -15,9 +15,9 @@ const urgentFormat = Object.freeze({
 })
 
 describe('TodoFormatRegistry（Registry + Strategy）', () => {
-  it('内置默认注册表包含 markdown-checkbox', () => {
-    expect(createDefaultRegistry().ids).toEqual(['markdown-checkbox'])
-    expect(createDefaultRegistry([urgentFormat]).ids).toEqual(['markdown-checkbox', 'urgent'])
+  it('内置默认注册表包含两个策略（结构化优先）', () => {
+    expect(createDefaultRegistry().ids).toEqual(['memoryleak-todo', 'markdown-checkbox'])
+    expect(createDefaultRegistry([urgentFormat]).ids).toEqual(['memoryleak-todo', 'markdown-checkbox', 'urgent'])
   })
 
   it('重复 id 在注册期崩溃（let-it-crash）', () => {

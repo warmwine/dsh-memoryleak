@@ -22,6 +22,8 @@ export const TODO_STATUSES = Object.freeze(['open', 'done', 'all'])
  * @property {TodoStatus} status
  * @property {string | null} text 大小写不敏感的包含匹配
  * @property {number | null} limit 最多保留条数；null = 不限
+ * @property {string | null} today 计算 sleep 唤醒的基准日（yyyy-mm-dd）；null = 不做 sleep 过滤
+ * @property {boolean} includeSleeping 是否包含未唤醒的 sleep 型待办
  * @property {(item: TodoItem) => boolean} predicate 编译出的组合谓词（内部）
  */
 
@@ -39,6 +41,17 @@ function textSpec(text) {
   return (item) => item.text.toLowerCase().includes(needle)
 }
 
+/** sleep 规格：未唤醒（date > today）的 sleep 型待办在默认视图隐藏。 */
+function sleepSpec(today, includeSleeping) {
+  if (includeSleeping || today === null) return () => true
+  return (item) => {
+    const meta = item.meta
+    if (meta === null || meta === undefined || meta.type !== 'sleep') return true
+    if (typeof meta.date !== 'string' || meta.date === '') return true
+    return meta.date <= today // 唤醒日已到（含当天）→ 可见
+  }
+}
+
 /** 规格组合（And）。 */
 function andSpec(left, right) {
   return (item) => left(item) && right(item)
@@ -47,11 +60,11 @@ function andSpec(left, right) {
 /**
  * 构造（校验并冻结的）TodoQuery。
  *
- * @param {{ status?: TodoStatus, text?: string | null, limit?: number | null }} [input]
+ * @param {{ status?: TodoStatus, text?: string | null, limit?: number | null, today?: string | null, includeSleeping?: boolean }} [input]
  * @returns {TodoQuery}
  */
 export function createTodoQuery(input = {}) {
-  const { status = 'all', text = null, limit = null } = input
+  const { status = 'all', text = null, limit = null, today = null, includeSleeping } = input
   if (!TODO_STATUSES.includes(status)) {
     throw new TodoError(`todo 查询 status 必须是 ${TODO_STATUSES.join(' / ')} 之一（收到 ${JSON.stringify(status)}）`)
   }
@@ -59,13 +72,17 @@ export function createTodoQuery(input = {}) {
   if (limit !== null) {
     invariant(Number.isInteger(limit) && limit >= 1, `todo 查询 limit 必须是正整数或 null（收到 ${String(limit)}）`)
   }
+  if (today !== null) invariant(/^\d{4}-\d{2}-\d{2}$/.test(today), `today 必须是 yyyy-mm-dd（收到 ${String(today)}）`)
+  const showSleeping = includeSleeping ?? status === 'all'
   const normalizedText = typeof text === 'string' ? text.trim() : ''
   return Object.freeze({
     action: 'list',
     status,
     text: normalizedText === '' ? null : normalizedText,
     limit,
-    predicate: andSpec(statusSpec(status), textSpec(normalizedText)),
+    today,
+    includeSleeping: showSleeping,
+    predicate: andSpec(andSpec(statusSpec(status), textSpec(normalizedText)), sleepSpec(today, showSleeping)),
   })
 }
 

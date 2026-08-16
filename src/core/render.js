@@ -30,6 +30,18 @@ const GLYPH_OPEN = '☐'
 const GLYPH_DONE = '☑'
 const WARN = '⚠'
 
+/** 结构化 meta 的展示徽章：[截止 2026-09-01·紧急] / [睡到 12-01·低] / [随时·中等]。 */
+const TYPE_LABEL = Object.freeze({ deadline: '截止', sleep: '睡到', anytime: '随时' })
+const PRIO_LABEL = Object.freeze({ urgent: '紧急', medium: '中等', low: '低' })
+
+function metaBadge(meta) {
+  if (meta === null || meta === undefined) return ''
+  const type = TYPE_LABEL[meta.type] ?? meta.type
+  const prio = PRIO_LABEL[meta.prio] ?? meta.prio
+  const date = typeof meta.date === 'string' && meta.date !== '' ? ` ${meta.date}` : ''
+  return ` [${type}${date}·${prio}]`
+}
+
 /** 结果是否不完整：查询截断或扫描截断都算。 */
 function isTruncated(applied, report) {
   return applied.truncated === true || report.truncated === true
@@ -70,7 +82,7 @@ export function renderTodoText(report, query = createTodoQuery()) {
         lines.push(`${FILE_BULLET} ${item.file} · ${perFile.get(item.file)} 条`)
       }
       const glyph = item.done ? GLYPH_DONE : GLYPH_OPEN
-      lines.push(`  ${String(item.line).padStart(4)} ${GUTTER} ${glyph} ${item.text}`)
+      lines.push(`  ${String(item.line).padStart(4)} ${GUTTER} ${glyph}${metaBadge(item.meta)} ${item.text}`)
     }
   }
   const warnings = []

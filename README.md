@@ -19,15 +19,26 @@
 | 命令 / 入口 | 作用 | token 消耗 |
 | --- | --- | --- |
 | `/ml <文本>` | 记一笔：写入工作区根目录的日志/周志 `## MemoryLeak` 模块（不存在则按模板新建文件） | **0**（命令面，不过模型） |
-| `/ml todo list` | 扫描当前工作区 Markdown 待办，按默认过滤（设置中可改 open/done/all），按文件分组返回 | **0**（命令面，不过模型） |
-| `/ml todo list all` / `open` / `done` | 同上，指定状态：全部 / 未完成 / 已完成 | **0** |
+| `/ml todo add <文本>` | 加结构化待办：固定格式提问类型（deadline/sleep/anytime）与重要程度（紧急/中等/低），deadline/sleep 再问日期；写入日志/周志的 `## Todo` 模块（建在 `## MemoryLeak` 之后） | **0**（提问为固定表单，不过模型） |
+| `/ml todo list` | 扫描当前工作区 Markdown 待办（默认过滤可在设置改），**默认隐藏未唤醒的 sleep 型**，按文件分组返回 | **0**（命令面，不过模型） |
+| `/ml todo list all` / `open` / `done` | 同上，指定状态；`all` 同时包含未唤醒的 sleep 型 | **0** |
 | `/ml todo list <关键词>` | 同上，按关键词过滤（大小写不敏感，可与状态词组合） | **0** |
 | `/ml todo` | 省略操作默认 `list`，等价 `/ml todo list` | **0** |
 | 设置窗口「MemoryLeak」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词、日志模式与模板（`/api/memoryleak/*` HTTP 路由） | **0** |
 
-> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。文件创建与写入是纯本地字符串操作，不涉 LLM。命令卡片通过 `conversation.chat.commandview`（key=ml）默认展开显示（命令回显 + 主题样式正文块），无需点击。
+> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。文件创建与写入是纯本地字符串操作，`/ml todo add` 的提问走 userQuestions 固定表单，均不涉 LLM。命令卡片通过 `conversation.chat.commandview`（key=ml）默认展开显示（命令回显 + 主题样式正文块），无需点击。
 >
 > 日志/周志约定：日志模式写入 `yyyy-mm-dd.md`，记录为模块下的一行 `- 文本`；周志模式写入 `yyyyWww.md`（ISO 周，模板默认带 `start:`/`end:` 配置），记录按日期分组 `- yyyy-mm-dd` → 子项 `  - 文本`。`todo` 是保留字——记录文本以 todo 开头时请换措辞。
+>
+> 结构化待办格式（`## Todo` 模块内，`/ml todo` 系列的读写契约）：
+>
+> ```
+> - [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿   ← 截止型：固定终结日
+> - [ ] (ml:sleep 2026-12-01 low) 学一遍内部源码      ← 睡眠型：到日唤醒（唤醒日前 list 默认不显示）
+> - [ ] (ml:anytime medium) 整理收藏夹                ← 随时型：无日期
+> ```
+>
+> 徽章展示形如 `[截止 2026-09-01·紧急]`；属性块损坏的行自动降级为普通待办（不丢数据）。
 >
 > 已知行为（DSH 上游设计，非本插件缺陷）：**新会话在发出第一条 LLM 消息前处于 blank 状态，不挂载对话时间线**——此时执行 `/ml`，结果不会立即显示（官方 `/plan`、`/goal` 同样如此）；发出第一条消息后，历史命令卡片会随时间线一起补显。命令事件已持久化，不会丢失。
 

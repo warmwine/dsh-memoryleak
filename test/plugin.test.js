@@ -9,7 +9,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, name, inject } from '../src/index.js'
 import { dailyFileName, formatDate, isoWeekOf, weeklyFileName } from '../src/core/journal.js'
-
 /** 伪 settings 服务：实现 register/describe/replace/update 的最小语义。 */
 function createFakeSettings() {
   const registrations = new Map()
@@ -39,14 +38,32 @@ function createFakeSettings() {
   }
 }
 
-function createFakeHost() {
+function createFakeHost(answers = {}) {
   const settings = createFakeSettings()
   const routes = []
   const routeKeys = new Set()
   const commands = []
   const effects = []
+  const askLog = []
   const ctx = {
     settings,
+    // 伪 userQuestions：按问题 id 返回预置答案（端到端注入点）
+    get(name) {
+      if (name !== 'userQuestions') return undefined
+      return {
+        async ask(request) {
+          askLog.push(request)
+          return {
+            answers: (request.questions ?? []).map((question) => {
+              const preset = answers[question.id]
+              if (preset === undefined) return { id: question.id, selected: [] }
+              if (preset.custom !== undefined) return { id: question.id, selected: [], custom: preset.custom }
+              return { id: question.id, selected: [preset] }
+            }),
+          }
+        },
+      }
+    },
     webServer: {
       // 与真实 dsh-host-webserver 一致：exact/prefix 的去重键是 (kind, path)，
       // 不含 HTTP 方法 —— 同路径多方法必须在单个 handler 内分发。
@@ -77,7 +94,7 @@ function createFakeHost() {
       return dispose
     },
   }
-  return { ctx, routes, commands, effects, settings }
+  return { ctx, routes, commands, effects, settings, askLog }
 }
 
 /** 最小 req/res 桩：驱动一条 exact 路由。 */
@@ -148,7 +165,7 @@ describe('宿主插件装配（apply）', () => {
     ])
     expect(command).toBeDefined()
     expect(command.description).toContain('/ml todo list')
-    expect(command.input.hint).toBe('<文本> 或 todo list [all|open|done] [关键词]')
+    expect(command.input.hint).toBe('<文本> / todo add <文本> / todo list [all|open|done] [关键词]')
   })
 
   it('GET /settings 返回默认段与修订号', async () => {
@@ -191,7 +208,10 @@ describe('宿主插件装配（apply）', () => {
   it('GET /formats 返回已注册策略', async () => {
     const formats = host.routes.find((route) => route.path === '/api/memoryleak/formats')
     const result = await invokeRoute(formats, 'GET')
-    expect(result.body.formats).toEqual([{ id: 'markdown-checkbox', title: expect.any(String), priority: 100 }])
+    expect(result.body.formats).toEqual([
+      { id: 'memoryleak-todo', title: expect.any(String), priority: 50 },
+      { id: 'markdown-checkbox', title: expect.any(String), priority: 100 },
+    ])
   })
 
   it('405 方法错误', async () => {
@@ -368,5 +388,138 @@ describe('/ml <文本> 日志记录（端到端）', () => {
     })
     expect(result.kind).toBe('error')
     expect(result.text).toMatch(/日志写入失败|工作区/)
+  })
+})
+
+describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
+  const answers = { type: 'deadline', prio: 'urgent', date: { custom: '2026-09-01' } }
+  const host = createFakeHost(answers)
+  let command
+  let todoWs
+
+  beforeAll(async () => {
+    apply(host.ctx)
+    command = host.commands.find((definition) => definition.name === 'ml')
+    todoWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-todo-'))
+  })
+
+  afterAll(async () => {
+    await rm(todoWs, { recursive: true, force: true })
+  })
+
+  const run = (rawInput) =>
+    command.handler({
+      agent: { session: { header: { cwd: todoWs } } },
+      rawInput,
+      signal: new AbortController().signal,
+    })
+
+  it('deadline：两轮提问 → 建文件、双模块、结构化行', async () => {
+    const result = await run('todo add 完成设计稿')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('已添加 →')
+    expect(result.text).toContain('## Todo')
+    expect(result.text).toContain('(ml:deadline 2026-09-01 urgent) 完成设计稿')
+    expect(result.text).toContain('截止型，日期 2026-09-01，紧急')
+    // 提问形态：第一轮两个固定选项问题，第二轮日期自由输入
+    expect(host.askLog[0].questions.map((q) => q.id)).toEqual(['type', 'prio'])
+    expect(host.askLog[0].questions[0].options).toHaveLength(3)
+    expect(host.askLog[1].questions[0].options).toBeUndefined()
+    // 文件内容：## MemoryLeak 在前，## Todo 在后
+    const daily = `${formatDate(new Date())}.md`
+    const content = await readFile(join(todoWs, daily), 'utf8')
+    expect(content.indexOf('## MemoryLeak')).toBeLessThan(content.indexOf('## Todo'))
+    expect(content).toContain('- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿')
+  })
+
+  it('list 默认显示 deadline 待办（带徽章）；all 同样可见', async () => {
+    const open = await run('todo list')
+    expect(open.kind).toBe('success')
+    expect(open.text).toContain('完成设计稿')
+    expect(open.text).toContain('[截止 2026-09-01·紧急]')
+    const all = await run('todo list all')
+    expect(all.text).toContain('完成设计稿')
+  })
+
+  it('sleep：默认隐藏，唤醒日前不可见，all 可见', async () => {
+    // 直接写入两条 sleep：一条远期（未唤醒），一条已过唤醒日
+    const daily = `${formatDate(new Date())}.md`
+    const path = join(todoWs, daily)
+    const current = await readFile(path, 'utf8')
+    const { insertTodoLine } = await import('../src/core/journal.js')
+    const next = insertTodoLine(
+      insertTodoLine(current, '- [ ] (ml:sleep 2099-01-01 low) 远期沉睡'),
+      '- [ ] (ml:sleep 2000-01-01 low) 早已唤醒',
+    )
+    await writeFile(path, next, 'utf8')
+
+    const open = await run('todo list')
+    expect(open.text).toContain('早已唤醒')
+    expect(open.text).not.toContain('远期沉睡')
+    const all = await run('todo list all')
+    expect(all.text).toContain('远期沉睡')
+    expect(all.text).toContain('[睡到 2099-01-01·低]')
+  })
+
+  it('anytime：不需要日期问题（只有一轮提问）', async () => {
+    const anytimeHost = createFakeHost({ type: 'anytime', prio: 'medium' })
+    apply(anytimeHost.ctx)
+    const anytimeCommand = anytimeHost.commands.find((definition) => definition.name === 'ml')
+    const result = await anytimeCommand.handler({
+      agent: { session: { header: { cwd: todoWs } } },
+      rawInput: 'todo add 整理收藏夹',
+      signal: new AbortController().signal,
+    })
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('(ml:anytime medium) 整理收藏夹')
+    expect(anytimeHost.askLog).toHaveLength(1) // 只有一轮（类型+优先级），无日期问题
+    const listed = await run('todo list')
+    expect(listed.text).toContain('整理收藏夹')
+    expect(listed.text).toContain('[随时·中等]')
+  })
+
+  it('非法选项答案被拒绝（不写入）', async () => {
+    const badHost = createFakeHost({ type: '不存在的类型', prio: 'urgent' })
+    apply(badHost.ctx)
+    const badCommand = badHost.commands.find((definition) => definition.name === 'ml')
+    const result = await badCommand.handler({
+      agent: { session: { header: { cwd: todoWs } } },
+      rawInput: 'todo add 不该写入',
+      signal: new AbortController().signal,
+    })
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('选择无效')
+  })
+
+  it('非法日期被拒绝（不写入）', async () => {
+    const badDateHost = createFakeHost({ type: 'deadline', prio: 'low', date: { custom: '明天' } })
+    apply(badDateHost.ctx)
+    const badDateCommand = badDateHost.commands.find((definition) => definition.name === 'ml')
+    const result = await badDateCommand.handler({
+      agent: { session: { header: { cwd: todoWs } } },
+      rawInput: 'todo add 不该写入2',
+      signal: new AbortController().signal,
+    })
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('日期格式无效')
+  })
+
+  it('无 userQuestions 服务时给出明确错误', async () => {
+    const bareHost = createFakeHost({})
+    bareHost.ctx.get = () => undefined
+    apply(bareHost.ctx)
+    const bareCommand = bareHost.commands.find((definition) => definition.name === 'ml')
+    const result = await bareCommand.handler({
+      agent: { session: { header: { cwd: todoWs } } },
+      rawInput: 'todo add 无界面',
+      signal: new AbortController().signal,
+    })
+    expect(result).toEqual({ kind: 'error', text: expect.stringContaining('交互提问界面') })
+  })
+
+  it('add 缺文本是用法错误', async () => {
+    const result = await run('todo add')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('/ml todo add <待办内容>')
   })
 })

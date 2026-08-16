@@ -60,7 +60,7 @@ describe('renderTodoText（命令卡片文本）', () => {
       errors: [{ file: 'bad.md', message: 'boom' }],
       skipped: [{ file: 'big.md', reason: '超过单文件上限 1 字节' }],
       truncated: true,
-      formats: ['markdown-checkbox'],
+      formats: ['memoryleak-todo', 'markdown-checkbox'],
     }
     const text = renderTodoText(report, createTodoQuery())
     const lines = text.split('\n')
@@ -84,7 +84,7 @@ describe('renderTodoJson（AI 预留的结构化契约）', () => {
     expect(round.groups).toEqual([
       { file: 'docs/plan.md', todos: [{ line: 1, text: 'gamma deploy', done: false, format: 'markdown-checkbox' }] },
     ])
-    expect(round.formats).toEqual(['markdown-checkbox'])
+    expect(round.formats).toEqual(['memoryleak-todo', 'markdown-checkbox'])
   })
 })
 

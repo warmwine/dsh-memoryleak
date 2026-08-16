@@ -18,7 +18,9 @@ import { createDefaultRegistry } from './core/registry.js'
 import { createScanLimits, createTodoScanner } from './core/scan.js'
 import { createNodeFileSource } from './adapters/node-file-source.js'
 import { makeMemoryleakRoutes } from './routes.js'
-import { recordJournalNote, JournalIoError } from './journal.js'
+import { recordJournalNote, recordTodoLine, JournalIoError } from './journal.js'
+import { buildStructuredTodoLine } from './core/formats/memoryleak-todo.js'
+import { formatDate } from './core/journal.js'
 import {
   MEMORYLEAK_SETTINGS_NAMESPACE,
   MEMORYLEAK_SETTINGS_DEFAULTS,
@@ -63,15 +65,15 @@ export function apply(ctx) {
     () =>
       ctx.commands.register({
         name: 'ml',
-        description: 'MemoryLeak · /ml <文本> 记一笔到日志/周志 · /ml todo list 列出工作区待办',
-        input: { hint: '<文本> 或 todo list [all|open|done] [关键词]' },
+        description: 'MemoryLeak · /ml <文本> 记一笔 · /ml todo add 加待办（提问类型/优先级） · /ml todo list 列待办',
+        input: { hint: '<文本> / todo add <文本> / todo list [all|open|done] [关键词]' },
         handler: wrappedHandler,
       }),
     'memoryleak: /ml command',
   )
 
   /**
-   * 命令处理器：按文法分发到待办列表或日志记录。
+   * 命令处理器：按文法分发到日志记录 / 待办添加 / 待办列表。
    *
    * @param {{ agent: { session?: { header?: { cwd?: string } } }, rawInput: string, signal: AbortSignal }} invocation
    * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
@@ -82,18 +84,100 @@ export function apply(ctx) {
       return { kind: 'error', text: '当前会话没有绑定工作区目录。' }
     }
     const parsed = parseMlArgs(rawInput)
+    const settings = resolveMemoryleakSettings(scope.get())
     if (parsed.family === 'journal') {
-      const settings = resolveMemoryleakSettings(scope.get())
       const record = await recordJournalNote({ cwd, settings, text: parsed.text })
       const where = record.mode === 'weekly' ? `## MemoryLeak · ${record.date}` : '## MemoryLeak'
       const suffix = record.created ? '（新建文件）' : ''
       return { kind: 'success', text: `已记录 → ${record.file} ${where}${suffix}\n- ${record.note}` }
     }
-    const settings = resolveMemoryleakSettings(scope.get())
-    const query = createTodoQuery({ status: parsed.status ?? settings.defaultStatus, text: parsed.text, limit: null })
+    if (parsed.action === 'add') {
+      return addTodoFlow(cwd, settings, parsed.text, signal)
+    }
+    const today = formatDate(new Date())
+    const query = createTodoQuery({
+      status: parsed.status ?? settings.defaultStatus,
+      text: parsed.text,
+      limit: null,
+      today,
+    })
     const scanner = createTodoScanner({ registry, fileSource, limits: createScanLimits(settings) })
     const report = await scanner.scan(cwd, settings, signal)
     return { kind: 'success', text: renderTodoText(report, query) }
+  }
+
+  /** /ml todo add 的交互流：固定格式提问（类型 → 优先级 → 日期），全程无 LLM。 */
+  async function addTodoFlow(cwd, settings, text, signal) {
+    const userQuestions = ctx.get('userQuestions')
+    if (userQuestions === undefined) {
+      return { kind: 'error', text: '当前环境没有可用的交互提问界面，无法运行 /ml todo add。' }
+    }
+
+    // 第一轮：类型 + 优先级（固定选项）
+    const choice = await userQuestions.ask({
+      signal,
+      questions: [
+        {
+          id: 'type',
+          question: `待办「${text}」的类型？`,
+          options: [
+            { label: 'deadline', description: '有固定终结日期，到日截止' },
+            { label: 'sleep', description: '先收起，到指定日期唤醒（唤醒前不出现在默认列表）' },
+            { label: 'anytime', description: '随时搞一下，只记录' },
+          ],
+        },
+        {
+          id: 'prio',
+          question: '重要程度？',
+          options: [
+            { label: 'urgent', description: '紧急' },
+            { label: 'medium', description: '中等' },
+            { label: 'low', description: '低优先级' },
+          ],
+        },
+      ],
+    })
+    const type = pick(choice, 'type', ['deadline', 'sleep', 'anytime'])
+    const prio = pick(choice, 'prio', ['urgent', 'medium', 'low'])
+    if (type === null || prio === null) {
+      return { kind: 'error', text: '选择无效：请从给出的选项中选取待办类型与重要程度。' }
+    }
+
+    // 第二轮：deadline / sleep 需要日期（自由输入）
+    let date = null
+    if (type === 'deadline' || type === 'sleep') {
+      const hint = type === 'deadline' ? '截止日期' : '唤醒日期'
+      const answer = await userQuestions.ask({
+        signal,
+        questions: [{ id: 'date', question: `${hint}是哪天？（yyyy-mm-dd）` }],
+      })
+      const raw = (answer?.answers?.find((entry) => entry.id === 'date')?.custom ?? '').trim()
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        return { kind: 'error', text: `日期格式无效（收到 "${raw}"），需要 yyyy-mm-dd。待办未写入。` }
+      }
+      date = raw
+    }
+
+    const todoLine = buildStructuredTodoLine({ type, date, prio, text })
+    const record = await recordTodoLine({ cwd, settings, todoLine })
+    const label = todoLabelOf(type, date, prio)
+    const suffix = record.created ? '（新建文件）' : ''
+    return { kind: 'success', text: `已添加 → ${record.file} ## Todo${suffix}\n${todoLine}\n${label}` }
+  }
+
+  /** 从 ask 答案中取出一个合法选项值（label 精确匹配，防自定义文本注入）。 */
+  function pick(answer, id, allowed) {
+    const selected = answer?.answers?.find((entry) => entry.id === id)?.selected ?? []
+    const label = Array.isArray(selected) ? selected[0] : undefined
+    return typeof label === 'string' && allowed.includes(label) ? label : null
+  }
+
+  /** 待办的人类可读摘要。 */
+  function todoLabelOf(type, date, prio) {
+    const names = { deadline: '截止型', sleep: '睡眠型（到日唤醒）', anytime: '随时型' }
+    const prioNames = { urgent: '紧急', medium: '中等', low: '低优先级' }
+    const datePart = date === null ? '' : `，日期 ${date}`
+    return `（${names[type]}${datePart}，${prioNames[prio]}）`
   }
 
   /** 包装：可预期故障 → 命令错误结果；未知异常原样上抛（可见崩溃）。 */

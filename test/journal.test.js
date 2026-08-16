@@ -3,6 +3,7 @@ import {
   dailyFileName,
   formatDate,
   insertNote,
+  insertTodoLine,
   isoWeekOf,
   renderJournalTemplate,
   weekLabel,
@@ -129,5 +130,56 @@ describe('insertNote · 参数校验', () => {
 
   it('非字符串文本抛 TodoError', () => {
     expect(() => insertNote('', { mode: 'daily', date: '2026-08-16', text: null })).toThrow(TodoError)
+  })
+})
+
+describe('insertTodoLine · ## Todo 模块', () => {
+  const T1 = '- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿'
+  const T2 = '- [ ] (ml:sleep 2026-12-01 low) 学源码'
+
+  it('空文件 → 先建 MemoryLeak 再建 Todo（Todo 在后）', () => {
+    expect(insertTodoLine('', T1)).toBe(
+      J(['## MemoryLeak', '', '## Todo', '', T1]),
+    )
+  })
+
+  it('已有 MemoryLeak 模块（有内容）→ Todo 建在模块之后', () => {
+    const content = J(['## MemoryLeak', '', '- 已有记录'])
+    expect(insertTodoLine(content, T1)).toBe(
+      J(['## MemoryLeak', '', '- 已有记录', '', '## Todo', '', T1]),
+    )
+  })
+
+  it('已有 Todo 模块 → 追加到列表末尾', () => {
+    const content = J(['## MemoryLeak', '', '- a', '', '## Todo', '', T1, '', '## 其他'])
+    expect(insertTodoLine(content, T2)).toBe(
+      J(['## MemoryLeak', '', '- a', '', '## Todo', '', T1, T2, '', '## 其他']),
+    )
+  })
+
+  it('识别 ##TODO 大小写变体', () => {
+    const content = J(['##TODO', '', T1])
+    expect(insertTodoLine(content, T2)).toBe(
+      J(['##TODO', '', T1, T2]),
+    )
+  })
+
+  it('Todo 模块内无列表项 → 空行隔开追加', () => {
+    const content = J(['## MemoryLeak', '', '## Todo', '', '散文一行', '', '## 下一节'])
+    expect(insertTodoLine(content, T1)).toBe(
+      J(['## MemoryLeak', '', '## Todo', '', '散文一行', '', T1, '', '## 下一节']),
+    )
+  })
+
+  it('周志模板（配置块）→ 两个模块建在配置之后', () => {
+    const content = 'start: 2026-08-10\nend: 2026-08-16\n'
+    expect(insertTodoLine(content, T1)).toBe(
+      J(['start: 2026-08-10', 'end: 2026-08-16', '', '## MemoryLeak', '', '## Todo', '', T1]),
+    )
+  })
+
+  it('非法参数抛错', () => {
+    expect(() => insertTodoLine('', '  ')).toThrow(/非空/)
+    expect(() => insertTodoLine(null, T1)).toThrow(/string/)
   })
 })

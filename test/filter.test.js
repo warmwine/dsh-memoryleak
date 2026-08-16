@@ -8,6 +8,14 @@ const items = [
   createTodoItem({ file: 'b.md', line: 5, text: '写周报', done: false, format: 'f' }),
 ]
 
+const TODAY = '2026-08-16'
+const withMeta = (over) => createTodoItem({ file: 'c.md', line: 1, text: '任务', done: false, format: 'memoryleak-todo', meta: { date: null, ...over } })
+const sleeping = withMeta({ type: 'sleep', date: '2026-12-01', prio: 'low' })
+const awake = withMeta({ type: 'sleep', date: '2026-08-01', prio: 'low' })
+const awakeToday = withMeta({ type: 'sleep', date: TODAY, prio: 'low' })
+const deadline = withMeta({ type: 'deadline', date: '2026-09-01', prio: 'urgent' })
+const anytime = withMeta({ type: 'anytime', prio: 'medium' })
+
 describe('TodoQuery（Specification）', () => {
   it('默认查询：all、无文本、无上限', () => {
     const query = createTodoQuery()
@@ -15,6 +23,28 @@ describe('TodoQuery（Specification）', () => {
     expect(query.text).toBeNull()
     expect(query.limit).toBeNull()
     expect(Object.isFrozen(query)).toBe(true)
+  })
+
+  it('sleep 规格默认：open/done 隐藏未唤醒，all 显示全部', () => {
+    const pool = [...items, sleeping, awake, deadline, anytime]
+    const open = applyTodoQuery(createTodoQuery({ status: 'open', today: TODAY }), pool)
+    expect(open.items.map((i) => i.text)).toEqual(['Deploy the API', '写周报', '任务', '任务', '任务']) // sleeping 隐藏，awake/deadline/anytime 可见
+    const all = applyTodoQuery(createTodoQuery({ status: 'all', today: TODAY }), pool)
+    expect(all.items).toHaveLength(pool.length)
+  })
+
+  it('唤醒日当天即视为唤醒（含当天）', () => {
+    const pool = [sleeping, awakeToday]
+    expect(applyTodoQuery(createTodoQuery({ status: 'open', today: TODAY }), pool).items).toEqual([awakeToday])
+  })
+
+  it('today 为 null 时不做 sleep 过滤；显式 includeSleeping 覆盖默认', () => {
+    expect(applyTodoQuery(createTodoQuery({ status: 'open' }), [sleeping]).items).toEqual([sleeping])
+    expect(applyTodoQuery(createTodoQuery({ status: 'open', today: TODAY, includeSleeping: true }), [sleeping]).items).toEqual([sleeping])
+  })
+
+  it('非法 today 拒绝', () => {
+    expect(() => createTodoQuery({ today: '2026/08/16' })).toThrow(/today/)
   })
 
   it.each([

@@ -12,6 +12,7 @@ import {
   dailyFileName,
   formatDate,
   insertNote,
+  insertTodoLine,
   isoWeekOf,
   renderJournalTemplate,
   weekLabel,
@@ -32,6 +33,32 @@ export class JournalIoError extends TodoError {}
  * @returns {Promise<{ file: string, mode: 'daily' | 'weekly', date: string, created: boolean, note: string }>}
  */
 export async function recordJournalNote({ cwd, settings, text, now = () => new Date() }) {
+  const located = await locateJournal({ cwd, settings, now })
+  const next = insertNote(located.content, { mode: located.mode, date: located.date, text })
+  await writeJournal(located, next)
+  return { file: located.file, mode: located.mode, date: located.date, created: located.created, note: text.trim() }
+}
+
+/**
+ * 把一行结构化待办写进工作区日志/周志的 ## Todo 模块（不存在则建在
+ * ## MemoryLeak 之后）。
+ *
+ * @param {object} input
+ * @param {string} input.cwd
+ * @param {object} input.settings
+ * @param {string} input.todoLine 完整待办行（含 `- [ ]` 前缀）
+ * @param {() => Date} [input.now]
+ * @returns {Promise<{ file: string, mode: 'daily' | 'weekly', date: string, created: boolean }>}
+ */
+export async function recordTodoLine({ cwd, settings, todoLine, now = () => new Date() }) {
+  const located = await locateJournal({ cwd, settings, now })
+  const next = insertTodoLine(located.content, todoLine)
+  await writeJournal(located, next)
+  return { file: located.file, mode: located.mode, date: located.date, created: located.created }
+}
+
+/** 定位（必要时按模板新建内容）当前日志文件。 */
+async function locateJournal({ cwd, settings, now }) {
   if (typeof cwd !== 'string' || cwd === '') throw new JournalIoError('工作区目录为空')
   const mode = settings.journalMode === 'weekly' ? 'weekly' : 'daily'
   const at = now()
@@ -57,12 +84,17 @@ export async function recordJournalNote({ cwd, settings, text, now = () => new D
       end: week.end,
     })
   }
+  return { path, file, mode, date, created, content }
+}
 
-  const next = insertNote(content, { mode, date, text })
+/** 写回日志文件。 */
+async function writeJournal(located, next) {
   try {
-    await writeFile(path, next, 'utf8')
+    await writeFile(located.path, next, 'utf8')
   } catch (error) {
-    throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+    throw new JournalIoError(
+      `写入 ${located.file} 失败：${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    )
   }
-  return { file, mode, date, created, note: text.trim() }
 }

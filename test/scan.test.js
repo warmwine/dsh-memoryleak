@@ -61,7 +61,7 @@ describe('createTodoScanner + MemoryFileSource（端口与适配器）', () => {
     expect(report.items.map((item) => item.file)).toEqual(['README.md', 'README.md', 'docs/notes.markdown', 'docs/plan.md'])
     expect(report.files).toEqual({ considered: 3, scanned: 3, matched: 3 })
     expect(report.truncated).toBe(false)
-    expect(report.formats).toEqual(['markdown-checkbox'])
+    expect(report.formats).toEqual(['memoryleak-todo', 'markdown-checkbox'])
     expect(Object.isFrozen(report)).toBe(true)
   })
 
