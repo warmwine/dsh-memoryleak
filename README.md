@@ -18,13 +18,16 @@
 
 | 命令 / 入口 | 作用 | token 消耗 |
 | --- | --- | --- |
+| `/ml <文本>` | 记一笔：写入工作区根目录的日志/周志 `## MemoryLeak` 模块（不存在则按模板新建文件） | **0**（命令面，不过模型） |
 | `/ml todo list` | 扫描当前工作区 Markdown 待办，按默认过滤（设置中可改 open/done/all），按文件分组返回 | **0**（命令面，不过模型） |
 | `/ml todo list all` / `open` / `done` | 同上，指定状态：全部 / 未完成 / 已完成 | **0** |
 | `/ml todo list <关键词>` | 同上，按关键词过滤（大小写不敏感，可与状态词组合） | **0** |
 | `/ml todo` | 省略操作默认 `list`，等价 `/ml todo list` | **0** |
-| 设置窗口「MemoryLeak」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词（`/api/memoryleak/*` HTTP 路由） | **0** |
+| 设置窗口「MemoryLeak」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词、日志模式与模板（`/api/memoryleak/*` HTTP 路由） | **0** |
 
-> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。
+> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。文件创建与写入是纯本地字符串操作，不涉 LLM。
+>
+> 日志/周志约定：日志模式写入 `yyyy-mm-dd.md`，记录为模块下的一行 `- 文本`；周志模式写入 `yyyyWww.md`（ISO 周，模板默认带 `start:`/`end:` 配置），记录按日期分组 `- yyyy-mm-dd` → 子项 `  - 文本`。`todo` 是保留字——记录文本以 todo 开头时请换措辞。
 >
 > 已知行为（DSH 上游设计，非本插件缺陷）：**新会话在发出第一条 LLM 消息前处于 blank 状态，不挂载对话时间线**——此时执行 `/ml`，结果不会立即显示（官方 `/plan`、`/goal` 同样如此）；发出第一条消息后，历史命令卡片会随时间线一起补显。命令事件已持久化，不会丢失。
 
@@ -45,8 +48,10 @@ src/core/      纯域（零依赖，vitest 直测）
   file-source.js Port：FileSource 契约（DIP）
   scan.js        扫描器：Registry + FileSource → 冻结的 ScanReport
   render.js      文本渲染（命令卡片）+ JSON 渲染（AI 预留契约）
+  journal.js     日志/周志：ISO 周、模板渲染、## MemoryLeak 插入算法（纯函数）
 src/adapters/  node（真实 fs）/ memory（测试·预览）双适配器
-src/index.js   宿主半：/ml todo 命令 · memoryleak 设置命名空间 · /api/memoryleak/* 路由
+src/journal.js 宿主胶水：定位文件 → 读/模板建 → 插入 → 写回（无 LLM）
+src/index.js   宿主半：/ml 命令 · memoryleak 设置命名空间 · /api/memoryleak/* 路由
 src/client.js  浏览器半：设置窗口（settings.section 槽位）
 ```
 

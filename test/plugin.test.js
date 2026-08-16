@@ -4,10 +4,11 @@
  * 不碰真实宿主进程。
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, name, inject } from '../src/index.js'
+import { dailyFileName, formatDate, isoWeekOf, weeklyFileName } from '../src/core/journal.js'
 
 /** 伪 settings 服务：实现 register/describe/replace/update 的最小语义。 */
 function createFakeSettings() {
@@ -147,7 +148,7 @@ describe('宿主插件装配（apply）', () => {
     ])
     expect(command).toBeDefined()
     expect(command.description).toContain('/ml todo list')
-    expect(command.input.hint).toBe('todo list [all|open|done] [关键词]')
+    expect(command.input.hint).toBe('<文本> 或 todo list [all|open|done] [关键词]')
   })
 
   it('GET /settings 返回默认段与修订号', async () => {
@@ -241,15 +242,6 @@ describe('宿主插件装配（apply）', () => {
     expect(result.text).not.toContain('alpha')
   })
 
-  it('用法错误返回 kind:error 而非抛出', async () => {
-    const result = await command.handler({
-      agent: { session: { header: { cwd: workspace } } },
-      rawInput: 'note new',
-      signal: new AbortController().signal,
-    })
-    expect(result).toEqual({ kind: 'error', text: expect.stringContaining('未知子命令') })
-  })
-
   it('未知操作返回 kind:error', async () => {
     const result = await command.handler({
       agent: { session: { header: { cwd: workspace } } },
@@ -282,5 +274,99 @@ describe('宿主插件装配（apply）', () => {
     expect(host.commands).toHaveLength(0)
     expect(routesBefore).toBe(3)
     expect(commandsBefore).toBe(1)
+  })
+})
+
+describe('/ml <文本> 日志记录（端到端）', () => {
+  const host = createFakeHost()
+  let command
+  let journalWs
+  let today
+  let dailyFile
+  let weekFile
+
+  beforeAll(async () => {
+    apply(host.ctx)
+    command = host.commands.find((definition) => definition.name === 'ml')
+    journalWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-journal-'))
+    const now = new Date()
+    today = formatDate(now)
+    dailyFile = dailyFileName(now)
+    weekFile = weeklyFileName(now)
+  })
+
+  afterAll(async () => {
+    await rm(journalWs, { recursive: true, force: true })
+  })
+
+  const run = (rawInput) =>
+    command.handler({
+      agent: { session: { header: { cwd: journalWs } } },
+      rawInput,
+      signal: new AbortController().signal,
+    })
+
+  it('daily 默认：新建文件并记录', async () => {
+    const result = await run(' 修复登录页样式')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain(`已记录 → ${dailyFile} ## MemoryLeak（新建文件）`)
+    expect(result.text).toContain('- 修复登录页样式')
+    const content = await readFile(join(journalWs, dailyFile), 'utf8')
+    expect(content).toBe(['## MemoryLeak', '', '- 修复登录页样式', ''].join('\n'))
+  })
+
+  it('daily 第二条：追加到同一列表', async () => {
+    const result = await run('写周报')
+    expect(result.kind).toBe('success')
+    expect(result.text).not.toContain('新建文件')
+    const content = await readFile(join(journalWs, dailyFile), 'utf8')
+    expect(content).toBe(['## MemoryLeak', '', '- 修复登录页样式', '- 写周报', ''].join('\n'))
+  })
+
+  it('weekly 模式：新建周志（start/end 配置 + 日期分组）', async () => {
+    await host.settings.replace('memoryleak', { journalMode: 'weekly' })
+    const result = await run('调研竞品')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain(`已记录 → ${weekFile} ## MemoryLeak · ${today}（新建文件）`)
+    const content = await readFile(join(journalWs, weekFile), 'utf8')
+    const week = isoWeekOf(new Date())
+    const lines = content.split('\n')
+    expect(lines[0]).toBe(`start: ${week.start}`)
+    expect(lines[1]).toBe(`end: ${week.end}`)
+    expect(content).toContain('## MemoryLeak')
+    expect(content).toContain(`- ${today}`)
+    expect(content).toContain('  - 调研竞品')
+  })
+
+  it('weekly 第二条：同日期追加子项', async () => {
+    const result = await run('复盘会议')
+    expect(result.kind).toBe('success')
+    const content = await readFile(join(journalWs, weekFile), 'utf8')
+    const block = content.slice(content.indexOf(`- ${today}`))
+    expect(block.indexOf('  - 调研竞品')).toBeLessThan(block.indexOf('  - 复盘会议'))
+  })
+
+  it('记录不会污染 todo 扫描（journal 行不是复选框）', async () => {
+    const result = await run('todo list all')
+    // 'todo list all' 属于 todo 家族：扫描 journalWs，两条 daily 记录不应出现
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('待办 0 条')
+    expect(result.text).not.toContain('修复登录页样式')
+  })
+
+  it('空文本仍是用法错误', async () => {
+    const result = await run('   ')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('用法')
+  })
+
+  it('工作区不可达返回环境错误', async () => {
+    const result = await command.handler({
+      agent: { session: { header: { cwd: join(journalWs, 'gone') } } },
+      rawInput: 'x',
+      signal: new AbortController().signal,
+    })
+    expect(result.kind).toBe('error')
+    expect(result.text).toMatch(/日志写入失败|工作区/)
   })
 })

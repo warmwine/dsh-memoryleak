@@ -5,7 +5,7 @@
  *   1. 装配核心引擎：Registry（内置 markdown-checkbox Strategy）+ NodeFileSource
  *   2. 注册 `memoryleak` 设置命名空间（持久化到 ~/.dsh/settings.yaml）
  *   3. 暴露 /api/memoryleak/* JSON 路由（设置窗口的读写桥）
- *   4. 注册 /ml todo 命令（dsh-commands 人类命令面）
+ *   4. 注册 /ml 命令（dsh-commands 人类命令面）：记录日志 + 待办列表
  *
  * 所有副作用挂在自身 Fiber 上：settings 注册随插件停用自动回收，路由与命令
  * 用 ctx.effect 显式回收。故障分级遵循 docs/DEVELOPMENT.md §2：用法/环境错
@@ -18,6 +18,7 @@ import { createDefaultRegistry } from './core/registry.js'
 import { createScanLimits, createTodoScanner } from './core/scan.js'
 import { createNodeFileSource } from './adapters/node-file-source.js'
 import { makeMemoryleakRoutes } from './routes.js'
+import { recordJournalNote, JournalIoError } from './journal.js'
 import {
   MEMORYLEAK_SETTINGS_NAMESPACE,
   MEMORYLEAK_SETTINGS_DEFAULTS,
@@ -62,25 +63,32 @@ export function apply(ctx) {
     () =>
       ctx.commands.register({
         name: 'ml',
-        description: 'MemoryLeak · /ml todo list：扫描当前工作区 Markdown 中的待办 [all|open|done] [关键词]',
-        input: { hint: 'todo list [all|open|done] [关键词]' },
+        description: 'MemoryLeak · /ml <文本> 记一笔到日志/周志 · /ml todo list 列出工作区待办',
+        input: { hint: '<文本> 或 todo list [all|open|done] [关键词]' },
         handler: wrappedHandler,
       }),
     'memoryleak: /ml command',
   )
 
   /**
-   * 命令处理器：组装查询 → 扫描 → 渲染。
+   * 命令处理器：按文法分发到待办列表或日志记录。
    *
    * @param {{ agent: { session?: { header?: { cwd?: string } } }, rawInput: string, signal: AbortSignal }} invocation
    * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
    */
-  async function todoCommandHandler({ agent, rawInput, signal }) {
+  async function mlCommandHandler({ agent, rawInput, signal }) {
     const cwd = agent !== null && typeof agent === 'object' ? agent.session?.header?.cwd : undefined
     if (typeof cwd !== 'string' || cwd === '') {
-      return { kind: 'error', text: '当前会话没有绑定工作区目录，无法扫描待办。' }
+      return { kind: 'error', text: '当前会话没有绑定工作区目录。' }
     }
     const parsed = parseMlArgs(rawInput)
+    if (parsed.family === 'journal') {
+      const settings = resolveMemoryleakSettings(scope.get())
+      const record = await recordJournalNote({ cwd, settings, text: parsed.text })
+      const where = record.mode === 'weekly' ? `## MemoryLeak · ${record.date}` : '## MemoryLeak'
+      const suffix = record.created ? '（新建文件）' : ''
+      return { kind: 'success', text: `已记录 → ${record.file} ${where}${suffix}\n- ${record.note}` }
+    }
     const settings = resolveMemoryleakSettings(scope.get())
     const query = createTodoQuery({ status: parsed.status ?? settings.defaultStatus, text: parsed.text, limit: null })
     const scanner = createTodoScanner({ registry, fileSource, limits: createScanLimits(settings) })
@@ -90,10 +98,11 @@ export function apply(ctx) {
 
   /** 包装：可预期故障 → 命令错误结果；未知异常原样上抛（可见崩溃）。 */
   function wrappedHandler(invocation) {
-    return todoCommandHandler(invocation).catch((error) => {
+    return mlCommandHandler(invocation).catch((error) => {
       if (error instanceof TodoUsageError) return { kind: 'error', text: error.message }
       if (error instanceof TodoRootError) return { kind: 'error', text: `工作区目录不可用：${error.message}` }
       if (error instanceof TodoScanAbortedError) return { kind: 'error', text: '扫描已取消。' }
+      if (error instanceof JournalIoError) return { kind: 'error', text: `日志写入失败：${error.message}` }
       throw error
     })
   }

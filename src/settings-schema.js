@@ -35,6 +35,9 @@ export const MEMORYLEAK_SETTINGS_DEFAULTS = Object.freeze({
   maxFileBytes: 512 * 1024,
   maxItems: 1000,
   defaultStatus: 'open',
+  journalMode: 'daily',
+  dailyTemplate: '',
+  weeklyTemplate: 'start: {start}\nend: {end}\n',
 })
 
 const EXTENSION_PATTERN = /^[a-z0-9]+$/i
@@ -48,6 +51,9 @@ export const memoryleakSettingsSchema = z.object({
   maxFileBytes: z.number().step(1).min(1024).max(10 * 1024 * 1024).default(MEMORYLEAK_SETTINGS_DEFAULTS.maxFileBytes),
   maxItems: z.number().step(1).min(1).max(10000).default(MEMORYLEAK_SETTINGS_DEFAULTS.maxItems),
   defaultStatus: z.string().pattern(/^(all|open|done)$/).default(MEMORYLEAK_SETTINGS_DEFAULTS.defaultStatus),
+  journalMode: z.string().pattern(/^(daily|weekly)$/).default(MEMORYLEAK_SETTINGS_DEFAULTS.journalMode),
+  dailyTemplate: z.string().max(4096).default(MEMORYLEAK_SETTINGS_DEFAULTS.dailyTemplate),
+  weeklyTemplate: z.string().max(4096).default(MEMORYLEAK_SETTINGS_DEFAULTS.weeklyTemplate),
 })
 
 /**

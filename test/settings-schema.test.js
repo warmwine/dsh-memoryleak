@@ -21,6 +21,25 @@ describe('memoryleak 设置命名空间', () => {
     expect(resolved.excludeDirs).toEqual(MEMORYLEAK_SETTINGS_DEFAULTS.excludeDirs)
   })
 
+  it('日志默认值：daily 模式 + 空日志模板 + start/end 周志模板', () => {
+    const defaults = resolveMemoryleakSettings(undefined)
+    expect(defaults.journalMode).toBe('daily')
+    expect(defaults.dailyTemplate).toBe('')
+    expect(defaults.weeklyTemplate).toBe('start: {start}\nend: {end}\n')
+    // 旧 settings.yaml（无新字段）解析得到新默认
+    const legacy = resolveMemoryleakSettings({ defaultStatus: 'open' })
+    expect(legacy.journalMode).toBe('daily')
+    expect(legacy.weeklyTemplate).toContain('{start}')
+  })
+
+  it.each([
+    [{ journalMode: 'monthly' }, /journalMode/],
+    [{ dailyTemplate: 'x'.repeat(4097) }, /dailyTemplate/],
+    [{ weeklyTemplate: 42 }, /weeklyTemplate/],
+  ])('非法日志段 %o 在解析期崩溃', (raw, pattern) => {
+    expect(() => resolveMemoryleakSettings(raw)).toThrow(pattern)
+  })
+
   it.each([
     [{ defaultStatus: 'ANY' }, /defaultStatus/],
     [{ extensions: [] }, /extensions/],

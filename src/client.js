@@ -54,6 +54,9 @@ window.__ModuleLoader__.load({
         maxFileKb: Math.round(section.maxFileBytes / 1024),
         maxItems: section.maxItems,
         defaultStatus: section.defaultStatus,
+        journalMode: section.journalMode === "weekly" ? "weekly" : "daily",
+        dailyTemplate: typeof section.dailyTemplate === "string" ? section.dailyTemplate : "",
+        weeklyTemplate: typeof section.weeklyTemplate === "string" ? section.weeklyTemplate : "",
       };
     }
 
@@ -76,6 +79,9 @@ window.__ModuleLoader__.load({
       if (!Number.isInteger(maxFileKb) || maxFileKb < 1 || maxFileKb > 10240) throw new Error("单文件上限必须是 1..10240 KB");
       if (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > 10000) throw new Error("最多条目必须是 1..10000 的整数");
       if (!STATUS_OPTIONS.some((option) => option[0] === draft.defaultStatus)) throw new Error("默认过滤词不合法");
+      if (draft.journalMode !== "daily" && draft.journalMode !== "weekly") throw new Error("日志模式必须是 daily 或 weekly");
+      if (typeof draft.dailyTemplate !== "string" || draft.dailyTemplate.length > 4096) throw new Error("日志模板必须是 4096 字符以内的文本");
+      if (typeof draft.weeklyTemplate !== "string" || draft.weeklyTemplate.length > 4096) throw new Error("周志模板必须是 4096 字符以内的文本");
       return {
         extensions,
         excludeDirs,
@@ -83,6 +89,9 @@ window.__ModuleLoader__.load({
         maxFileBytes: maxFileKb * 1024,
         maxItems,
         defaultStatus: draft.defaultStatus,
+        journalMode: draft.journalMode,
+        dailyTemplate: draft.dailyTemplate,
+        weeklyTemplate: draft.weeklyTemplate,
       };
     }
 
@@ -217,6 +226,31 @@ window.__ModuleLoader__.load({
             style: inputStyle,
           }),
           "单次扫描收集的待办条数上限"),
+        row("日志模式",
+          React.createElement("select", {
+            value: draft.journalMode,
+            onChange: (event) => update({ journalMode: event.target.value }),
+            style: { minWidth: 180 },
+          },
+            React.createElement("option", { key: "daily", value: "daily" }, "日志（yyyy-mm-dd.md）"),
+            React.createElement("option", { key: "weekly", value: "weekly" }, "周志（yyyyWww.md）")),
+          "/ml <文本> 写入哪类文件；不存在时按模板新建"),
+        row("日志模板",
+          React.createElement("textarea", {
+            value: draft.dailyTemplate,
+            onChange: (event) => update({ dailyTemplate: event.target.value }),
+            rows: 3,
+            style: { minWidth: 240, fontVariantNumeric: "tabular-nums" },
+          }),
+          "新建日志文件的初始内容；占位符 {date} {week}"),
+        row("周志模板",
+          React.createElement("textarea", {
+            value: draft.weeklyTemplate,
+            onChange: (event) => update({ weeklyTemplate: event.target.value }),
+            rows: 4,
+            style: { minWidth: 240, fontVariantNumeric: "tabular-nums" },
+          }),
+          "新建周志文件的初始内容；占位符 {start} {end} {week}"),
         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, gap: 8 } },
           React.createElement("span", {
             style: message === null ? { display: "none" } : {

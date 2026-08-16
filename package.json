@@ -1,7 +1,7 @@
 {
   "name": "dsh-memoryleak",
-  "version": "0.2.1",
-  "description": "DSH MemoryLeak 插件：V1 提供设置窗口与 /ml todo list 命令——扫描当前工作区 Markdown 中的待办（- [ ] / - [x]），格式引擎可扩展，为 AI 生成/过滤特定格式预留查询模型。",
+  "version": "0.3.0",
+  "description": "DSH MemoryLeak 插件：/ml <文本> 记一笔到工作区日志/周志（## MemoryLeak 模块，模板可配，无 LLM）；/ml todo list 扫描工作区 Markdown 待办。格式引擎可扩展，为 AI 生成/过滤预留查询模型。",
   "type": "module",
   "main": "src/index.js",
   "exports": {

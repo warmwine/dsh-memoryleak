@@ -44,11 +44,13 @@ src/
 │   ├── walk-policy.js       共享遍历策略（两个适配器同一语义）
 │   ├── scan.js              扫描器：组合 Registry+FileSource，产出冻结报告
 │   ├── render.js            渲染器：文本（命令卡片）+ JSON（AI 契约）
-│   └── command.js           /ml todo 文法（纯函数）
+│   ├── journal.js           日志/周志：ISO 周、模板渲染、## MemoryLeak 插入（纯函数）
+│   └── command.js           /ml 文法（journal/todo 两家族，纯函数）
 ├── adapters/                适配器（边缘）
 │   ├── node-file-source.js  真实 fs 绑定（宿主）
 │   └── memory-file-source.js 内存绑定（测试 / 未来预览）
 ├── settings-schema.js       schemastery schema + 默认值（settings.yaml 段）
+├── journal.js               日志宿主胶水：定位文件 → 读/模板建 → 插入 → 写回（无 LLM）
 ├── routes.js                /api/memoryleak/* 同源 JSON 桥（webServer 模式）
 ├── index.js                 宿主半：组装根（命令/设置/路由注册，全部可逆）
 └── client.js                浏览器半：settings.section 设置窗口
@@ -103,8 +105,10 @@ src/
 
 ## 7. 版本与兼容
 
-- `TodoItem` 字段、`renderTodoJson` 输出结构、settings.yaml 的 `notes:` 段、
-  `/api/memoryleak/*` 响应体 —— 这四样是对外契约，**只加不破**。
+- `TodoItem` 字段、`renderTodoJson` 输出结构、settings.yaml 的 `memoryleak:` 段、
+  `/api/memoryleak/*` 响应体、日志文件内 `## MemoryLeak` 模块的 markdown 结构
+  （日 `- 文本` / 周 `- yyyy-mm-dd` + `  - 文本`、周志头部 `start:`/`end:` 配置块）
+  —— 这五样是对外契约，**只加不破**。
 - 破坏性变更必须升主版本号并在 README 声明迁移路径。
 - 新的待办格式 = 新 Strategy + 注册进 `createDefaultRegistry`（或由其他插件
   运行时注入），格式 id 一经发布不可复用为其他含义。
