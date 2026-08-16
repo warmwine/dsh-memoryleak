@@ -268,20 +268,60 @@ window.__ModuleLoader__.load({
           formats.map((f) => React.createElement("p", { key: f.id, style: hintStyle }, f.id + " — " + f.title + "（优先级 " + f.priority + "）"))));
     }
 
+    /* ---------------- /ml 命令的默认展开视图 ----------------
+       conversation.chat.commandview 按命令名派发；默认回退是折叠的
+       GenericCommandCard（需点击展开）。这里用「默认展开」的排版替换：
+       小字命令回显 + 主题令牌的 pre 块，直接作为会话内容呈现。
+       node: { name, args, outcome: null | { kind, text? } }
+       （/ml 记录与 /ml todo 两个家族共用此视图。）
+       已知边界：blank 会话（从未发过 LLM 消息）不挂载时间线，命令卡片
+       无论自定义还是通用都不显示 —— DSH 上游设计，见 README「已知行为」。 */
+    function MlCommandView({ node }) {
+      const outcome = node !== null && typeof node === "object" && node.outcome !== undefined ? node.outcome : null;
+      const header = "/ml" + (typeof node?.args === "string" && node.args !== "" ? node.args : "");
+      const captionStyle = {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: 12,
+        margin: "0 0 2px 4px",
+      };
+      if (outcome === null) {
+        return React.createElement("div", null,
+          React.createElement("div", { style: captionStyle }, header + " · 正在执行…"));
+      }
+      const text = typeof outcome.text === "string" ? outcome.text : "";
+      const isError = outcome.kind === "error";
+      return React.createElement("div", null,
+        React.createElement("div", { style: captionStyle }, header),
+        React.createElement("pre", {
+          style: {
+            border: "1px solid var(--dsw-alias-border-l1)",
+            background: "var(--dsw-alias-markdown-code-block)",
+            color: isError ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-primary)",
+            font: "var(--dsw-font-markdown-code-block-small)",
+            whiteSpace: "pre-wrap",
+            borderRadius: 12,
+            padding: "12px 16px",
+            margin: 0,
+          },
+        }, text === "" ? "（无输出）" : text));
+    }
+
     /* ---------------- 插件入口 ---------------- */
     const inject = ["slots"];
 
     function apply(ctx) {
       // 设置窗口：GUI 设置面板中的一个「MemoryLeak」分区（与字体设置页同款槽位）。
-      //
-      // 注：曾尝试注册 conversation.chat.commandview（key=ml）实现「默认展开」
-      // 的命令视图，但该槽位目前无任何插件占用/验证，实测条目走进空渲染路径
-      // （错误边界的 crash face 是空 div），命令结果因此不可见 —— 已回退到
-      // shell 自带的通用命令卡片（可点击展开，稳定可靠）。详见 git 历史
-      // commit 1833275。
       ctx.slots.inject("settings.section", () => ctx.slots.register(
         { name: "settings.section", id: "memoryleak", order: 96, label: "MemoryLeak" },
         () => React.createElement(NotesSettingsPage)
+      ));
+
+      // /ml 命令卡片：默认展开的会话式视图（替换需点击展开的通用折叠卡）。
+      // 曾因「空结果不显示」误撤（commit 5968400）——后确认那是 blank 会话
+      // 无时间线的上游行为，与槽位无关；非 blank 会话本视图工作正常。
+      ctx.slots.inject("conversation.chat.commandview", () => ctx.slots.register(
+        { name: "conversation.chat.commandview", key: "ml" },
+        (owner) => React.createElement(MlCommandView, { node: owner === null || owner === undefined ? null : owner.node })
       ));
     }
 

@@ -25,7 +25,7 @@
 | `/ml todo` | 省略操作默认 `list`，等价 `/ml todo list` | **0** |
 | 设置窗口「MemoryLeak」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词、日志模式与模板（`/api/memoryleak/*` HTTP 路由） | **0** |
 
-> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。文件创建与写入是纯本地字符串操作，不涉 LLM。
+> 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。文件创建与写入是纯本地字符串操作，不涉 LLM。命令卡片通过 `conversation.chat.commandview`（key=ml）默认展开显示（命令回显 + 主题样式正文块），无需点击。
 >
 > 日志/周志约定：日志模式写入 `yyyy-mm-dd.md`，记录为模块下的一行 `- 文本`；周志模式写入 `yyyyWww.md`（ISO 周，模板默认带 `start:`/`end:` 配置），记录按日期分组 `- yyyy-mm-dd` → 子项 `  - 文本`。`todo` 是保留字——记录文本以 todo 开头时请换措辞。
 >
