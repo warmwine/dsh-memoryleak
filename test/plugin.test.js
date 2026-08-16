@@ -164,8 +164,31 @@ describe('宿主插件装配（apply）', () => {
       'exact /api/memoryleak/settings/reset',
     ])
     expect(command).toBeDefined()
-    expect(command.description).toContain('/ml todo list')
-    expect(command.input.hint).toBe('<文本> / todo add <文本> / todo list [all|open|done] [关键词]')
+    // 注册描述保持短并导向 /ml help（汇总说明统一由 help 提供）
+    expect(command.description).toBe('MemoryLeak 记事本 · 输入 /ml help 查看全部命令')
+    expect(command.input.hint).toBe('<文本> / todo 子命令 / help')
+  })
+
+  it('/ml help：返回汇总说明（无需工作区绑定）', async () => {
+    const result = await command.handler({
+      agent: { id: 'a', session: { header: {} } }, // 无 cwd 也能看帮助
+      rawInput: 'help',
+      signal: new AbortController().signal,
+    })
+    expect(result.kind).toBe('success')
+    for (const fragment of ['/ml <文本>', '/ml todo n', '/ml todo l', '/ml todo d', '/ml todo u', '/ml help']) {
+      expect(result.text).toContain(fragment)
+    }
+  })
+
+  it('/ml h 别名同样返回帮助', async () => {
+    const result = await command.handler({
+      agent: { id: 'a', session: { header: {} } },
+      rawInput: ' h',
+      signal: new AbortController().signal,
+    })
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('MemoryLeak · /ml 命令一览')
   })
 
   it('GET /settings 返回默认段与修订号', async () => {
@@ -525,7 +548,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
   it('add 缺文本是用法错误', async () => {
     const result = await run('todo add')
     expect(result.kind).toBe('error')
-    expect(result.text).toContain('/ml todo add <待办内容>')
+    expect(result.text).toContain('/ml todo n <待办内容>')
   })
 })
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseMlArgs, ML_USAGE } from '../src/core/command.js'
+import { parseMlArgs, renderMlHelp, ML_USAGE } from '../src/core/command.js'
 import { TodoUsageError } from '../src/core/errors.js'
 
 describe('parseMlArgs（/ml 文法）', () => {
@@ -8,15 +8,23 @@ describe('parseMlArgs（/ml 文法）', () => {
       ['todo', { family: 'todo', action: 'list', status: null, text: null }],
       ['  todo  ', { family: 'todo', action: 'list', status: null, text: null }],
       ['todo list', { family: 'todo', action: 'list', status: null, text: null }],
-      ['todo list open', { family: 'todo', action: 'list', status: 'open', text: null }],
-      ['todo list done', { family: 'todo', action: 'list', status: 'done', text: null }],
-      ['todo list all', { family: 'todo', action: 'list', status: 'all', text: null }],
-      ['todo list deploy', { family: 'todo', action: 'list', status: null, text: 'deploy' }],
-      ['todo list all deploy api', { family: 'todo', action: 'list', status: 'all', text: 'deploy api' }],
+      ['todo l', { family: 'todo', action: 'list', status: null, text: null }],
+      ['todo l open', { family: 'todo', action: 'list', status: 'open', text: null }],
+      ['todo l done', { family: 'todo', action: 'list', status: 'done', text: null }],
+      ['todo l all', { family: 'todo', action: 'list', status: 'all', text: null }],
+      ['todo l deploy', { family: 'todo', action: 'list', status: null, text: 'deploy' }],
+      ['todo l all deploy api', { family: 'todo', action: 'list', status: 'all', text: 'deploy api' }],
       ['todo list deploy open', { family: 'todo', action: 'list', status: null, text: 'deploy open' }],
-      ['todo list ALL', { family: 'todo', action: 'list', status: null, text: 'ALL' }],
+      ['todo l ALL', { family: 'todo', action: 'list', status: null, text: 'ALL' }],
     ])('%j → %j', (input, expected) => {
       expect(parseMlArgs(input)).toEqual(expected)
+    })
+
+    it('n / add 别名：新增待办', () => {
+      expect(parseMlArgs('todo n 修 bug')).toEqual({ family: 'todo', action: 'add', text: '修 bug' })
+      expect(parseMlArgs('todo add 修 bug')).toEqual({ family: 'todo', action: 'add', text: '修 bug' })
+      expect(() => parseMlArgs('todo n')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('todo n')).toThrow(/\/ml todo n/)
     })
 
     it('未知操作抛用法错误', () => {
@@ -32,6 +40,32 @@ describe('parseMlArgs（/ml 文法）', () => {
     })
   })
 
+  describe('help 家族', () => {
+    it('help / h 都解析', () => {
+      expect(parseMlArgs('help')).toEqual({ family: 'help' })
+      expect(parseMlArgs('h')).toEqual({ family: 'help' })
+      expect(parseMlArgs('  help  ')).toEqual({ family: 'help' })
+    })
+
+    it('renderMlHelp 覆盖全部已注册命令', () => {
+      const help = renderMlHelp()
+      for (const fragment of [
+        '/ml <文本>',
+        '/ml todo n <待办内容>',
+        'add 同义',
+        '/ml todo l [all|open|done] [关键词]',
+        'list 同义',
+        '/ml todo d <序号>',
+        '/ml todo u',
+        '/ml help',
+      ]) {
+        expect(help).toContain(fragment)
+      }
+      // 帮助里不该出现未实现的命令
+      expect(help).not.toMatch(/\/ml todo (?!n|l|d|u)\w+/)
+    })
+  })
+
   describe('journal 家族（/ml <文本>）', () => {
     it.each([
       ['修复登录页样式', '修复登录页样式'],
@@ -39,19 +73,21 @@ describe('parseMlArgs（/ml 文法）', () => {
       ['todos 是复数不算保留字', 'todos 是复数不算保留字'],
       ['list 现在是普通文本', 'list 现在是普通文本'],
       ['note new', 'note new'],
+      ['helps 是普通文本（复数不保留）', 'helps 是普通文本（复数不保留）'],
     ])('%j → 记录 %j', (input, text) => {
       expect(parseMlArgs(input)).toEqual({ family: 'journal', text })
     })
   })
 
-  it('空输入抛用法错误', () => {
+  it('空输入抛用法错误并导向 help', () => {
     expect(() => parseMlArgs('')).toThrow(TodoUsageError)
     expect(() => parseMlArgs('   ')).toThrow(TodoUsageError)
-    expect(() => parseMlArgs('')).toThrow(/用法/)
+    expect(() => parseMlArgs('')).toThrow(/\/ml help/)
   })
 
-  it('用法文案包含两种家族', () => {
-    expect(ML_USAGE).toContain('/ml <文本>')
-    expect(ML_USAGE).toContain('/ml todo list')
+  it('用法文案覆盖全部入口', () => {
+    for (const fragment of ['/ml <文本>', '/ml todo n', '/ml todo l', '/ml todo d', '/ml todo u', '/ml help']) {
+      expect(ML_USAGE).toContain(fragment)
+    }
   })
 })

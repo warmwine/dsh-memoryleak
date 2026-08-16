@@ -27,7 +27,7 @@ import {
   memoryleakSettingsSchema,
   resolveMemoryleakSettings,
 } from './settings-schema.js'
-import { parseMlArgs } from './core/command.js'
+import { parseMlArgs, renderMlHelp } from './core/command.js'
 import { applyTodoQuery, createTodoQuery } from './core/filter.js'
 import { renderTodoText } from './core/render.js'
 import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
@@ -69,29 +69,34 @@ export function apply(ctx) {
   }, 'memoryleak: /api/memoryleak routes')
 
   // ---- /ml 命令（单一注册点；子命令文法见 core/command.js）----
+  // 注册描述保持短并导向 /ml help —— 命令菜单/补全里的一行说明不可能
+  // 装下全部子命令，汇总说明统一由 /ml help 提供。
   ctx.effect(
     () =>
       ctx.commands.register({
         name: 'ml',
-        description: 'MemoryLeak · /ml <文本> 记一笔 · /ml todo add 加待办（提问类型/优先级） · /ml todo list 列待办',
-        input: { hint: '<文本> / todo add <文本> / todo list [all|open|done] [关键词]' },
+        description: 'MemoryLeak 记事本 · 输入 /ml help 查看全部命令',
+        input: { hint: '<文本> / todo 子命令 / help' },
         handler: wrappedHandler,
       }),
     'memoryleak: /ml command',
   )
 
   /**
-   * 命令处理器：按文法分发到日志记录 / 待办添加 / 待办列表。
+   * 命令处理器：按文法分发到帮助 / 日志记录 / 待办操作。
    *
    * @param {{ agent: { session?: { header?: { cwd?: string } } }, rawInput: string, signal: AbortSignal }} invocation
    * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
    */
   async function mlCommandHandler({ agent, rawInput, signal }) {
+    const parsed = parseMlArgs(rawInput)
+    if (parsed.family === 'help') {
+      return { kind: 'success', text: renderMlHelp() }
+    }
     const cwd = agent !== null && typeof agent === 'object' ? agent.session?.header?.cwd : undefined
     if (typeof cwd !== 'string' || cwd === '') {
       return { kind: 'error', text: '当前会话没有绑定工作区目录。' }
     }
-    const parsed = parseMlArgs(rawInput)
     const settings = resolveMemoryleakSettings(scope.get())
     if (parsed.family === 'journal') {
       const record = await recordJournalNote({ cwd, settings, text: parsed.text })

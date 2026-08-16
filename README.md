@@ -18,14 +18,15 @@
 
 | 命令 / 入口 | 作用 | token 消耗 |
 | --- | --- | --- |
+| `/ml help`（或 `h`） | 命令一览：全部命令与效果的汇总说明（命令菜单里的注册描述也导向这里） | **0** |
 | `/ml <文本>` | 记一笔：写入工作区根目录的日志/周志 `## MemoryLeak` 模块（不存在则按模板新建文件） | **0**（命令面，不过模型） |
-| `/ml todo add <文本>` | 加结构化待办：固定格式提问类型（deadline/sleep/anytime）与重要程度（紧急/中等/低），deadline/sleep 再问日期；写入日志/周志的 `## Todo` 模块（建在 `## MemoryLeak` 之后） | **0**（提问为固定表单，不过模型） |
-| `/ml todo list` | 扫描当前工作区 Markdown 待办（默认过滤可在设置改），**默认隐藏未唤醒的 sleep 型**，按文件分组返回；**到日的 sleep 自动唤醒**（源文件转写为 active）并显示 ☀ 计数；每条带序号，供 `d <n>` 寻址 | **0**（命令面，不过模型） |
-| `/ml todo list all` / `open` / `done` | 同上，指定状态；`all` 同时包含未唤醒的 sleep 型 | **0** |
-| `/ml todo list <关键词>` | 同上，按关键词过滤（大小写不敏感，可与状态词组合） | **0** |
-| `/ml todo d <n>`（或 `done <n>`） | 切换**最近一次 list** 结果中第 n 条的完成态（序号是 list 作用域的；未 list 先报错提示） | **0** |
+| `/ml todo n <文本>`（或 `add`） | 加结构化待办：固定格式提问类型（deadline/sleep/anytime）与重要程度（紧急/中等/低），deadline/sleep 再问日期；写入日志/周志的 `## Todo` 模块（建在 `## MemoryLeak` 之后） | **0**（提问为固定表单，不过模型） |
+| `/ml todo l`（或 `list`） | 扫描当前工作区 Markdown 待办（默认过滤可在设置改），**默认隐藏未唤醒的 sleep 型**，按文件分组返回；**到日的 sleep 自动唤醒**（源文件转写为 active）并显示 ☀ 计数；每条带序号，供 `d <n>` 寻址 | **0**（命令面，不过模型） |
+| `/ml todo l all` / `open` / `done` | 同上，指定状态；`all` 同时包含未唤醒的 sleep 型 | **0** |
+| `/ml todo l <关键词>` | 同上，按关键词过滤（大小写不敏感，可与状态词组合） | **0** |
+| `/ml todo d <n>`（或 `done <n>`） | 切换**最近一次 l** 结果中第 n 条的完成态（序号是 l 作用域的；未 l 先报错提示） | **0** |
 | `/ml todo u`（或 `undo`） | 撤销最近一次 `d`（可连续撤销，LIFO；d 之后该行被外部修改则拒绝撤销） | **0** |
-| `/ml todo` | 省略操作默认 `list`，等价 `/ml todo list` | **0** |
+| `/ml todo` | 省略操作默认 `l`，等价 `/ml todo l` | **0** |
 | 设置窗口「MemoryLeak」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词、日志模式与模板（`/api/memoryleak/*` HTTP 路由） | **0** |
 
 > 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。文件创建与写入是纯本地字符串操作，`/ml todo add` 的提问走 userQuestions 固定表单，均不涉 LLM。命令卡片通过 `conversation.chat.commandview`（key=ml）默认展开显示（命令回显 + 主题样式正文块），无需点击。
