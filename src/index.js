@@ -37,8 +37,11 @@ import { resolveViewTarget } from './core/fuzzy.js'
 /** 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。 */
 export const name = 'memoryleak'
 
-/** 硬依赖：webServer（API 路由）、commands（/ml todo）、settings（持久化设置）。 */
-export const inject = ['webServer', 'commands', 'settings']
+/**
+ * 硬依赖：webServer（API 路由）、commands（/ml）、settings（持久化设置）、
+ * sessions（/api/memoryleak/files 按会话定位工作区 —— ctx.sessions.get）。
+ */
+export const inject = ['webServer', 'commands', 'settings', 'sessions']
 
 export { createDefaultRegistry, createTodoScanner, createScanLimits }
 

@@ -159,9 +159,22 @@ describe('宿主插件装配（apply）', () => {
     command = host.commands.find((definition) => definition.name === 'ml')
   })
 
-  it('声明稳定的插件名与硬依赖', () => {
+  it('声明稳定的插件名与硬依赖（inject 与代码实际访问的 ctx 服务一致）', async () => {
     expect(name).toBe('memoryleak')
-    expect(inject).toEqual(['webServer', 'commands', 'settings'])
+    expect(inject).toEqual(['webServer', 'commands', 'settings', 'sessions'])
+    // 回归：宿主源码里访问的每个 ctx.<service>（effect 除外）都必须出现在
+    // inject 声明里 —— Guard 在属性访问时拦截，桩 ctx 无 Guard 测不出来。
+    const hostSources = (
+      await Promise.all(
+        ['src/index.js', 'src/routes.js'].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')),
+      )
+    ).join('\n')
+    const accessed = new Set(hostSources.match(/\bctx\.\w+/g) ?? [])
+    for (const access of accessed) {
+      const service = access.slice('ctx.'.length)
+      if (service === 'effect' || service === 'plugin' || service === 'get') continue
+      expect(inject, `宿主代码访问 ctx.${service} 但未声明 inject`).toContain(service)
+    }
   })
 
   it('注册 3 条 API 路由（GET/POST /settings 合一）与 1 条 /ml 命令', () => {
