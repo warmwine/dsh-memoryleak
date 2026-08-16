@@ -20,13 +20,13 @@
  * @module dsh-memoryleak/core/formats/memoryleak-todo
  */
 
-/** 结构化待办类型。 */
-export const TODO_TYPES = Object.freeze(['deadline', 'sleep', 'anytime'])
+/** 结构化待办类型（active = sleep 到日唤醒后的形态，无日期）。 */
+export const TODO_TYPES = Object.freeze(['deadline', 'sleep', 'anytime', 'active'])
 
 /** 优先级。 */
 export const TODO_PRIORITIES = Object.freeze(['urgent', 'medium', 'low'])
 
-const STRUCTURED_PATTERN = /^[ \t]*(?:[-*+])[ \t]+\[([ xX])][ \t]+\(ml:(deadline|sleep|anytime)(?:[ \t]+(\d{4}-\d{2}-\d{2}))?[ \t]+(urgent|medium|low)\)[ \t]+(\S.*)$/
+const STRUCTURED_PATTERN = /^[ \t]*(?:[-*+])[ \t]+\[([ xX])][ \t]+\(ml:(deadline|sleep|anytime|active)(?:[ \t]+(\d{4}-\d{2}-\d{2}))?[ \t]+(urgent|medium|low)\)[ \t]+(\S.*)$/
 
 /** 校验 meta 形状（registry / 值对象边界复用）。 */
 export function isValidTodoMeta(meta) {
@@ -50,9 +50,9 @@ export const memoryleakTodoFormat = Object.freeze({
     const match = STRUCTURED_PATTERN.exec(line)
     if (match === null) return null
     const [, mark, type, date, prio, body] = match
-    // deadline/sleep 缺日期、anytime 带日期 → 视为格式损坏，交给后续策略兜底
+    // deadline/sleep 缺日期、anytime/active 带日期 → 格式损坏，交给后续策略兜底
     if ((type === 'deadline' || type === 'sleep') && date === undefined) return null
-    if (type === 'anytime' && date !== undefined) return null
+    if ((type === 'anytime' || type === 'active') && date !== undefined) return null
     return Object.freeze({
       done: mark !== ' ',
       text: body.trim(),
@@ -75,9 +75,24 @@ export function buildStructuredTodoLine({ done = false, type, date = null, prio,
   if (needsDate && (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date))) {
     throw new Error(`${type} 型待办需要 yyyy-mm-dd 日期`)
   }
-  if (!needsDate && date != null) throw new Error('anytime 型待办不带日期')
+  if (!needsDate && date != null) throw new Error(`${type} 型待办不带日期`)
   const mark = done ? 'x' : ' '
   const datePart = needsDate ? ` ${date}` : ''
   const body = text.replace(/\s*\r?\n\s*/g, ' ').trim()
   return `- [${mark}] (ml:${type}${datePart} ${prio}) ${body}`
+}
+
+/**
+ * 唤醒转写：把一行未完成的 sleep 待办改写为 active（保留完成态/优先级/正文，
+ * 去掉日期）。非 sleep 行抛错 —— 调用方（唤醒遍历）已按 meta 过滤。
+ *
+ * @param {string} raw 文件中的原始行
+ * @returns {string} active 行
+ */
+export function activateSleepLine(raw) {
+  const match = memoryleakTodoFormat.parse(String(raw ?? ''))
+  if (match === null || match.meta.type !== 'sleep') {
+    throw new Error('activateSleepLine 只接受 sleep 型待办行')
+  }
+  return buildStructuredTodoLine({ done: match.done, type: 'active', prio: match.meta.prio, text: match.text })
 }

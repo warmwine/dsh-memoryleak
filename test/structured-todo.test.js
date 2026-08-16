@@ -74,10 +74,11 @@ describe('memoryleak-todo 策略（构造）', () => {
   })
 
   it('常量与 meta 校验', () => {
-    expect(TODO_TYPES).toEqual(['deadline', 'sleep', 'anytime'])
+    expect(TODO_TYPES).toEqual(['deadline', 'sleep', 'anytime', 'active'])
     expect(TODO_PRIORITIES).toEqual(['urgent', 'medium', 'low'])
     expect(isValidTodoMeta(null)).toBe(true)
     expect(isValidTodoMeta({ type: 'sleep', date: '2026-12-01', prio: 'low' })).toBe(true)
+    expect(isValidTodoMeta({ type: 'active', date: null, prio: 'low' })).toBe(true)
     expect(isValidTodoMeta({ type: 'sleep', date: 'bad', prio: 'low' })).toBe(false)
     expect(isValidTodoMeta({ type: 'nope', date: null, prio: 'low' })).toBe(false)
   })

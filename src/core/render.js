@@ -11,8 +11,9 @@
  *   待办 N 条（…） · M 个文件                ← 摘要行（折叠卡片可见的开头）
  *   ────────────────────────────             ← 分隔线
  *   ■ docs/plan.md · 2 条                    ← 文件分组头
- *      12 │ ☐ 未完成事项                      ← 行号 │ 选票符号 正文
- *      34 │ ☑ 已完成事项
+ *    1.   12 │ ☐ 未完成事项                   ← 序号. 行号 │ 选票符号 正文
+ *    2.   34 │ ☑ 已完成事项                   （序号供 /ml todo d <n>）
+ *   ☀ 唤醒块（sleep 到日转写为 active 的计数）
  *   ⚠ 警告块（截断 / 跳过 / 读取失败）
  *
  * @module dsh-memoryleak/core/render
@@ -29,9 +30,10 @@ const GUTTER = '│'
 const GLYPH_OPEN = '☐'
 const GLYPH_DONE = '☑'
 const WARN = '⚠'
+const WOKE = '☀'
 
-/** 结构化 meta 的展示徽章：[截止 2026-09-01·紧急] / [睡到 12-01·低] / [随时·中等]。 */
-const TYPE_LABEL = Object.freeze({ deadline: '截止', sleep: '睡到', anytime: '随时' })
+/** 结构化 meta 的展示徽章：[截止 2026-09-01·紧急] / [睡到 12-01·低] / [随时·中等] / [唤醒·低]。 */
+const TYPE_LABEL = Object.freeze({ deadline: '截止', sleep: '睡到', anytime: '随时', active: '唤醒' })
 const PRIO_LABEL = Object.freeze({ urgent: '紧急', medium: '中等', low: '低' })
 
 function metaBadge(meta) {
@@ -76,15 +78,19 @@ export function renderTodoText(report, query = createTodoQuery()) {
     const perFile = new Map()
     for (const item of applied.items) perFile.set(item.file, (perFile.get(item.file) ?? 0) + 1)
     let currentFile = null
+    let displayId = 0
     for (const item of applied.items) {
       if (item.file !== currentFile) {
         currentFile = item.file
         lines.push(`${FILE_BULLET} ${item.file} · ${perFile.get(item.file)} 条`)
       }
+      displayId += 1
       const glyph = item.done ? GLYPH_DONE : GLYPH_OPEN
-      lines.push(`  ${String(item.line).padStart(4)} ${GUTTER} ${glyph}${metaBadge(item.meta)} ${item.text}`)
+      const idColumn = `${String(displayId).padStart(3)}.`
+      lines.push(`${idColumn} ${String(item.line).padStart(4)} ${GUTTER} ${glyph}${metaBadge(item.meta)} ${item.text}`)
     }
   }
+  if (report.wokenCount > 0) lines.push(RULE, `${WOKE} 已唤醒 ${report.wokenCount} 条 sleep 待办（转写为 active）`)
   const warnings = []
   if (isTruncated(applied, report)) warnings.push(`${WARN} 已截断：达到条数上限 —— 可在设置「MemoryLeak」中调大「最多条目」`)
   if (report.skipped.length > 0) {

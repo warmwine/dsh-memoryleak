@@ -6,10 +6,13 @@ import {
   insertTodoLine,
   isoWeekOf,
   renderJournalTemplate,
+  replaceLine,
+  toggleTodoLine,
   weekLabel,
   weeklyFileName,
 } from '../src/core/journal.js'
 import { TodoError } from '../src/core/errors.js'
+import { activateSleepLine } from '../src/core/formats/memoryleak-todo.js'
 
 const D = (s) => new Date(`${s}T12:00:00`)
 /** 期望输出统一以单个换行结尾（文件级约定）。 */
@@ -181,5 +184,41 @@ describe('insertTodoLine · ## Todo 模块', () => {
   it('非法参数抛错', () => {
     expect(() => insertTodoLine('', '  ')).toThrow(/非空/)
     expect(() => insertTodoLine(null, T1)).toThrow(/string/)
+  })
+})
+
+describe('toggleTodoLine / replaceLine / activateSleepLine', () => {
+  const SLEEP = '- [ ] (ml:sleep 2026-08-01 low) 学源码'
+  const content = J(['# 日志', '', '## Todo', '', '- [ ] alpha', SLEEP, '- [x] beta'])
+
+  it('toggle：未完成 → 已完成（保留缩进与正文）', () => {
+    const result = toggleTodoLine(content, 5)
+    expect(result.done).toBe(true)
+    expect(result.content).toContain('- [x] alpha')
+    expect(result.content).toContain(SLEEP) // 其余行不动
+  })
+
+  it('toggle：已完成 → 未完成', () => {
+    const result = toggleTodoLine(content, 7)
+    expect(result.done).toBe(false)
+    expect(result.content).toContain('- [ ] beta')
+  })
+
+  it('toggle：非待办行 / 越界行抛错', () => {
+    expect(() => toggleTodoLine(content, 1)).toThrow(/不是待办复选框/)
+    expect(() => toggleTodoLine(content, 99)).toThrow(/超出文件范围/)
+    expect(() => toggleTodoLine(content, 0)).toThrow(/正行号/)
+  })
+
+  it('replaceLine：raw 匹配才替换，否则抛错', () => {
+    const active = '- [ ] (ml:active low) 学源码'
+    expect(replaceLine(content, 6, SLEEP, active)).toContain(active)
+    expect(() => replaceLine(content, 5, SLEEP, active)).toThrow(/已变化/)
+  })
+
+  it('activateSleepLine：sleep → active（保留完成态/优先级/正文，去日期）', () => {
+    expect(activateSleepLine(SLEEP)).toBe('- [ ] (ml:active low) 学源码')
+    expect(activateSleepLine('- [x] (ml:sleep 2026-08-01 urgent) 学源码')).toBe('- [x] (ml:active urgent) 学源码')
+    expect(() => activateSleepLine('- [ ] alpha')).toThrow(/sleep/)
   })
 })

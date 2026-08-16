@@ -23,15 +23,15 @@ describe('renderTodoText（命令卡片文本）', () => {
     expect(firstLine).not.toMatch(/\n/)
   })
 
-  it('TUI 排版：分组头 + 行号栏 + 选票符号', async () => {
+  it('TUI 排版：分组头 + 序号. 行号栏 + 选票符号', async () => {
     const report = await scanner.scan('/ws', { extensions: ['md'], excludeDirs: ['node_modules'] })
     const text = renderTodoText(report, createTodoQuery({ status: 'open' }))
     const lines = text.split('\n')
     expect(lines[1]).toBe('─'.repeat(44)) // 第二行是分隔线
     expect(lines).toContain('■ README.md · 1 条')
     expect(lines).toContain('■ docs/plan.md · 1 条')
-    expect(lines).toContain('     1 │ ☐ alpha')
-    expect(lines).toContain('     1 │ ☐ gamma deploy')
+    expect(lines).toContain('  1.    1 │ ☐ alpha')
+    expect(lines).toContain('  2.    1 │ ☐ gamma deploy')
     expect(text).not.toContain('☑') // open 过滤下无已完成符号
   })
 
@@ -70,6 +70,21 @@ describe('renderTodoText（命令卡片文本）', () => {
     expect(lines[placeholder + 2]).toMatch(/^⚠ 已截断/)
     expect(text).toContain('⚠ 跳过 1 个超大文件：big.md')
     expect(text).toContain('bad.md: boom')
+  })
+
+  it('wokenCount > 0 时显示唤醒块', () => {
+    const report = {
+      root: '/ws',
+      items: [],
+      files: { considered: 1, scanned: 1, matched: 0 },
+      errors: [],
+      skipped: [],
+      truncated: false,
+      formats: [],
+      wokenCount: 2,
+    }
+    const text = renderTodoText(report, createTodoQuery())
+    expect(text).toContain('☀ 已唤醒 2 条 sleep 待办')
   })
 })
 

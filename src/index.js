@@ -28,9 +28,10 @@ import {
   resolveMemoryleakSettings,
 } from './settings-schema.js'
 import { parseMlArgs } from './core/command.js'
-import { createTodoQuery } from './core/filter.js'
+import { applyTodoQuery, createTodoQuery } from './core/filter.js'
 import { renderTodoText } from './core/render.js'
 import { TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
+import { wakeupSleepingTodos, toggleTodoAt } from './journal.js'
 
 /** 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。 */
 export const name = 'memoryleak'
@@ -47,6 +48,10 @@ export function apply(ctx) {
   // ---- 组装核心（纯域 + 适配器）----
   const registry = createDefaultRegistry()
   const fileSource = createNodeFileSource()
+
+  // 每个会话最近一次 /ml todo list 的展示顺序（/ml todo d <n> 的寻址表）。
+  // 序号是 list 作用域的：list 时写入，d 时消费；进程内生命周期即可。
+  const lastListByAgent = new Map()
 
   // ---- 设置命名空间（非法的存储段会让本次注册抛错 → 插件加载失败；带病运行不如早崩）----
   const scope = ctx.settings.register(MEMORYLEAK_SETTINGS_NAMESPACE, memoryleakSettingsSchema, { base: MEMORYLEAK_SETTINGS_DEFAULTS })
@@ -94,6 +99,9 @@ export function apply(ctx) {
     if (parsed.action === 'add') {
       return addTodoFlow(agent, cwd, settings, parsed.text, signal)
     }
+    if (parsed.action === 'toggle') {
+      return toggleTodoByNumber(agent, cwd, parsed.n)
+    }
     const today = formatDate(new Date())
     const query = createTodoQuery({
       status: parsed.status ?? settings.defaultStatus,
@@ -102,8 +110,49 @@ export function apply(ctx) {
       today,
     })
     const scanner = createTodoScanner({ registry, fileSource, limits: createScanLimits(settings) })
-    const report = await scanner.scan(cwd, settings, signal)
+    let report = await scanner.scan(cwd, settings, signal)
+
+    // 唤醒遍历：到日的 sleep 落盘转写为 active，再以转写后的 meta 呈现
+    const { woken, failures } = await wakeupSleepingTodos(cwd, report.items, today)
+    if (woken > 0 || failures.length > 0) {
+      report = Object.freeze({
+        ...report,
+        wokenCount: woken,
+        items: Object.freeze(
+          report.items.map((item) =>
+            item.meta !== null && item.meta.type === 'sleep' && item.done !== true &&
+            typeof item.meta.date === 'string' && item.meta.date <= today && item.raw !== null
+              ? Object.freeze({ ...item, meta: Object.freeze({ type: 'active', date: null, prio: item.meta.prio }) })
+              : item,
+          ),
+        ),
+      })
+    }
+
+    // 记录本次 list 的展示顺序（/ml todo d <n> 的寻址表），与渲染序号一致
+    lastListByAgent.set(agentIdOf(agent), applyTodoQuery(query, report.items).items)
     return { kind: 'success', text: renderTodoText(report, query) }
+  }
+
+  /** /ml todo d <n>：按最近一次 list 的序号切换完成态。 */
+  async function toggleTodoByNumber(agent, cwd, n) {
+    const list = lastListByAgent.get(agentIdOf(agent))
+    if (list === undefined || list.length === 0) {
+      return { kind: 'error', text: '还没有可寻址的待办列表 —— 请先执行 /ml todo list。' }
+    }
+    if (n > list.length) {
+      return { kind: 'error', text: `序号超出范围：最近一次列表共 ${list.length} 条（收到 ${n}）。请重新 /ml todo list。` }
+    }
+    const item = list[n - 1]
+    const result = await toggleTodoAt(cwd, item.file, item.line)
+    const state = result.done ? '已完成 ☑' : '未完成 ☐'
+    return { kind: 'success', text: `#${n} → ${state} ${item.text}\n（${item.file}:${item.line}）` }
+  }
+
+  /** agent → 稳定键（无 id 的调用降级为共享桶）。 */
+  function agentIdOf(agent) {
+    const id = agent !== null && typeof agent === 'object' && typeof agent.id === 'string' ? agent.id : '_anonymous'
+    return id
   }
 
   /**

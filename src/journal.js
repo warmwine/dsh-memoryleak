@@ -15,9 +15,12 @@ import {
   insertTodoLine,
   isoWeekOf,
   renderJournalTemplate,
+  replaceLine,
+  toggleTodoLine,
   weekLabel,
   weeklyFileName,
 } from './core/journal.js'
+import { activateSleepLine } from './core/formats/memoryleak-todo.js'
 
 /** 日志读写故障（环境错误，命令层转用户可见结果）。 */
 export class JournalIoError extends TodoError {}
@@ -97,4 +100,76 @@ async function writeJournal(located, next) {
       { cause: error },
     )
   }
+}
+
+/**
+ * 唤醒转写：把扫描报告中已到唤醒日、未完成的 sleep 待办在源文件里改写为
+ * active（按 文件+行号+raw 三重校验，行变化即跳过该条）。单文件故障隔离
+ * —— 一个文件写失败不影响其余，计入 failures 返回。
+ *
+ * @param {string} cwd 工作区根目录
+ * @param {ReadonlyArray<{file: string, line: number, raw: string|null, meta: object|null, done: boolean}>} items 扫描报告条目
+ * @param {string} today yyyy-mm-dd
+ * @returns {Promise<{ woken: number, failures: Array<{file: string, message: string}> }>}
+ */
+export async function wakeupSleepingTodos(cwd, items, today) {
+  const due = items.filter(
+    (item) =>
+      item.done !== true &&
+      item.meta !== null &&
+      item.meta.type === 'sleep' &&
+      typeof item.meta.date === 'string' &&
+      item.meta.date <= today &&
+      typeof item.raw === 'string',
+  )
+  const byFile = new Map()
+  for (const item of due) {
+    if (!byFile.has(item.file)) byFile.set(item.file, [])
+    byFile.get(item.file).push(item)
+  }
+  let woken = 0
+  const failures = []
+  for (const [file, fileItems] of byFile) {
+    try {
+      const path = join(cwd, file)
+      let content = await readFile(path, 'utf8')
+      for (const item of fileItems) {
+        try {
+          content = replaceLine(content, item.line, item.raw, activateSleepLine(item.raw))
+          woken += 1
+        } catch {
+          // 行内容变化 → 跳过该条（下一轮扫描重新决策）
+        }
+      }
+      await writeFile(path, content, 'utf8')
+    } catch (error) {
+      failures.push({ file, message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  return { woken, failures }
+}
+
+/**
+ * 切换工作区内某文件某行的待办完成态。
+ *
+ * @param {string} cwd
+ * @param {string} file 工作区相对路径
+ * @param {number} line 1 起始行号
+ * @returns {Promise<{ done: boolean }>} 切换后的完成态
+ */
+export async function toggleTodoAt(cwd, file, line) {
+  const path = join(cwd, file)
+  let content
+  try {
+    content = await readFile(path, 'utf8')
+  } catch (error) {
+    throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  const result = toggleTodoLine(content, line)
+  try {
+    await writeFile(path, result.content, 'utf8')
+  } catch (error) {
+    throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  return { done: result.done }
 }

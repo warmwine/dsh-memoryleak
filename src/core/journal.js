@@ -214,6 +214,51 @@ function withFinalNewline(lines) {
   return `${lines.join('\n')}\n`
 }
 
+/** 待办复选框行的匹配与翻转。 */
+const CHECKBOX_LINE = /^([ \t]*(?:[-*+])[ \t]+)\[([ xX])](\s.*)$/
+
+/**
+ * 切换指定行待办的完成态（纯函数；保留原文其余部分与换行形态）。
+ *
+ * @param {string} content 文件内容
+ * @param {number} lineNumber 1 起始行号
+ * @returns {{ content: string, done: boolean }} 新内容与切换后的完成态
+ */
+export function toggleTodoLine(content, lineNumber) {
+  invariant(typeof content === 'string', 'toggleTodoLine 需要 string 内容')
+  invariant(Number.isInteger(lineNumber) && lineNumber >= 1, `toggleTodoLine 需要正行号（收到 ${String(lineNumber)}）`)
+  const lines = content.split('\n')
+  const index = lineNumber - 1
+  if (index >= lines.length) throw new TodoError(`第 ${lineNumber} 行超出文件范围`)
+  const match = CHECKBOX_LINE.exec(lines[index])
+  if (match === null) throw new TodoError(`第 ${lineNumber} 行不是待办复选框行：${lines[index].slice(0, 40)}`)
+  const nextDone = match[2] === ' '
+  lines[index] = `${match[1]}[${nextDone ? 'x' : ' '}]${match[3]}`
+  return { content: lines.join('\n'), done: nextDone }
+}
+
+/**
+ * 替换指定行为新内容（唤醒转写用；行内容与期望不符时抛错防误写）。
+ *
+ * @param {string} content 文件内容
+ * @param {number} lineNumber 1 起始行号
+ * @param {string} expectedRaw 该行当前应为的内容（扫描时的 raw）
+ * @param {string} nextLine 替换为的行
+ * @returns {string} 新内容
+ */
+export function replaceLine(content, lineNumber, expectedRaw, nextLine) {
+  invariant(typeof content === 'string', 'replaceLine 需要 string 内容')
+  invariant(Number.isInteger(lineNumber) && lineNumber >= 1, `replaceLine 需要正行号（收到 ${String(lineNumber)}）`)
+  const lines = content.split('\n')
+  const index = lineNumber - 1
+  if (index >= lines.length) throw new TodoError(`第 ${lineNumber} 行超出文件范围`)
+  if (lines[index] !== expectedRaw) {
+    throw new TodoError(`第 ${lineNumber} 行内容已变化（扫描后文件被修改），跳过转写`)
+  }
+  lines[index] = nextLine
+  return lines.join('\n')
+}
+
 /** 一个顶层列表项的块尾（含其连续缩进子项）—— 在它之后插入才不拆散嵌套。 */
 function endOfItemBlock(lines, start, limit) {
   let end = start

@@ -528,3 +528,94 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     expect(result.text).toContain('/ml todo add <待办内容>')
   })
 })
+
+describe('/ml todo d 与唤醒转写（端到端）', () => {
+  const host = createFakeHost()
+  let command
+  let dWs
+
+  beforeAll(async () => {
+    apply(host.ctx)
+    command = host.commands.find((definition) => definition.name === 'ml')
+    dWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-d-'))
+    // 手工布置：一条远期 sleep、一条到日 sleep、一条 deadline
+    const daily = `${formatDate(new Date())}.md`
+    const { insertTodoLine } = await import('../src/core/journal.js')
+    let content = insertTodoLine('', '- [ ] (ml:sleep 2099-01-01 low) 远期沉睡')
+    content = insertTodoLine(content, '- [ ] (ml:sleep 2000-01-01 medium) 早已唤醒')
+    content = insertTodoLine(content, '- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿')
+    await writeFile(join(dWs, daily), content)
+  })
+
+  afterAll(async () => {
+    await rm(dWs, { recursive: true, force: true })
+  })
+
+  const run = (rawInput, agentId = 'agent-d-test') =>
+    command.handler({
+      agent: { id: agentId, session: { header: { cwd: dWs } } },
+      rawInput,
+      signal: new AbortController().signal,
+    })
+
+  it('未 list 直接 d → 提示先 list', async () => {
+    const result = await run('todo d 1')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('请先执行 /ml todo list')
+  })
+
+  it('list：到日 sleep 落盘转写为 active（文件内容变化 + 输出唤醒计数）', async () => {
+    const result = await run('todo list')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('☀ 已唤醒 1 条 sleep 待办')
+    expect(result.text).toContain('早已唤醒')
+    expect(result.text).toContain('[唤醒·中等]') // 转写后的徽章
+    expect(result.text).not.toContain('远期沉睡') // 未唤醒仍隐藏
+    const daily = `${formatDate(new Date())}.md`
+    const content = await readFile(join(dWs, daily), 'utf8')
+    expect(content).toContain('- [ ] (ml:active medium) 早已唤醒')
+    expect(content).toContain('- [ ] (ml:sleep 2099-01-01 low) 远期沉睡') // 远期不动
+  })
+
+  it('再次 list：active 不再触发转写（无 ☀ 唤醒行）', async () => {
+    const result = await run('todo list')
+    expect(result.kind).toBe('success')
+    expect(result.text).not.toContain('☀ 已唤醒')
+    expect(result.text).toContain('[唤醒·中等]')
+  })
+
+  it('d <n>：按序号切换完成态（落盘 + 回显）', async () => {
+    const result = await run('todo d 1')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('#1 → 已完成 ☑')
+    const daily = `${formatDate(new Date())}.md`
+    const content = await readFile(join(dWs, daily), 'utf8')
+    expect(content).toContain('- [x] (ml:active medium) 早已唤醒')
+  })
+
+  it('d done 别名 + 再次切换回未完成', async () => {
+    const result = await run('todo done 1')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('#1 → 未完成 ☐')
+  })
+
+  it('序号超出范围报错', async () => {
+    const result = await run('todo d 99')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('序号超出范围')
+  })
+
+  it('不同会话的 list 快照互不干扰', async () => {
+    const other = await run('todo d 1', 'agent-d-other')
+    expect(other.kind).toBe('error')
+    expect(other.text).toContain('请先执行 /ml todo list')
+  })
+
+  it('d 缺序号/非数字是用法错误', async () => {
+    const result = await run('todo d')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('/ml todo d <序号>')
+    const bad = await run('todo d abc')
+    expect(bad.kind).toBe('error')
+  })
+})
