@@ -477,46 +477,76 @@ window.__ModuleLoader__.load({
       if (!visible) return null;
 
       const hint = "↑↓ 选择 · Tab 补全 · Enter 打开 · Esc 关闭";
+      // 定位对齐官方 MenuView：overlay 锚点是 display:contents，卡片必须
+      // 绝对定位在 composer 容器内、从输入框下沿向上弹（bottom:100%）。
       const cardStyle = {
-        border: "1px solid var(--dsw-alias-border-l1)",
-        background: "var(--dsw-alias-bg-base)",
+        position: "absolute",
+        bottom: "calc(100% + 4px)",
+        left: 0,
+        right: 0,
+        maxWidth: "min(537px, 100%)",
+        zIndex: 100,
+        border: "1px solid var(--dsw-alias-border-inverted)",
+        background: "var(--dsw-specific-menu)",
         borderRadius: 12,
-        marginBottom: 6,
         maxHeight: 280,
         overflowY: "auto",
-        boxShadow: "var(--dsw-shadow-lv2, 0 4px 16px rgba(0,0,0,.12))",
+        boxShadow: "var(--dsw-shadow-lv3)",
+        padding: 4,
+        display: "flex",
+        flexDirection: "column",
+        "--dsh-scrollbar-thumb": "var(--dsw-alias-scrollbar-bg-l2)",
+        "--dsh-scrollbar-thumb-hover": "var(--dsw-alias-scrollbar-hover-l2)",
       };
       const hintStyle = {
         color: "var(--dsw-alias-label-tertiary)",
-        fontSize: 11,
-        padding: "5px 12px 3px",
+        fontSize: 12,
+        lineHeight: "16px",
+        padding: "8px 10px 6px",
         borderBottom: "1px solid var(--dsw-alias-border-l1)",
-        position: "sticky",
-        top: 0,
-        background: "var(--dsw-alias-bg-base)",
+        flex: "0 0 auto",
       };
       const rowStyle = (isActive) => ({
         display: "flex",
         justifyContent: "space-between",
-        gap: 12,
-        padding: "5px 12px",
-        fontSize: 13,
+        gap: 8,
+        alignItems: "center",
+        minHeight: 36,
+        padding: "8px 10px",
+        fontSize: 14,
+        lineHeight: "22px",
         cursor: "pointer",
+        width: "100%",
+        textAlign: "left",
         background: isActive ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+        border: "none",
+        borderRadius: 10,
         color: "var(--dsw-alias-label-primary)",
         whiteSpace: "nowrap",
         overflow: "hidden",
         textOverflow: "ellipsis",
       });
-      const metaStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, flex: "0 0 auto" };
+      const metaStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 12, lineHeight: "16px", flex: "0 0 auto" };
+
+      const statusRow = (text, isError) => React.createElement("div", {
+        style: {
+          color: isError ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-dimmed)",
+          fontSize: 14,
+          lineHeight: "22px",
+          minHeight: 40,
+          display: "flex",
+          alignItems: "center",
+          padding: "8px 10px",
+        },
+      }, text);
 
       let body;
       if (error !== null) {
-        body = React.createElement("div", { style: { ...hintStyle, borderBottom: "none", color: "var(--dsw-alias-state-error-primary)" } }, `候选加载失败：${error}`);
+        body = statusRow(`候选加载失败：${error}`, true);
       } else if (names === null) {
-        body = React.createElement("div", { style: { ...hintStyle, borderBottom: "none" } }, "正在加载候选…");
+        body = statusRow("正在加载候选…");
       } else if (rows.length === 0) {
-        body = React.createElement("div", { style: { ...hintStyle, borderBottom: "none" } }, `没有匹配「${fragment}」的文件（回车将按宿主解析执行）`);
+        body = statusRow(`没有匹配「${fragment}」的文件（回车将按宿主解析执行）`);
       } else {
         body = rows.map((row, index) => React.createElement("div", {
           key: row.name,
@@ -535,7 +565,9 @@ window.__ModuleLoader__.load({
     }
 
     /* ---------------- 插件入口 ---------------- */
-    const inject = ["slots", "commandUi", "remote", "remote.commands", "conversation", "sessions"];
+    // sessions/conversation 是槽位 inject 工厂里解析会话输入 shell 的硬依赖，
+    // 必须声明，否则运行时报 cannot get property "sessions" without inject。
+    const inject = ["slots", "commandUi", "remote", "remote.commands", "sessions", "conversation"];
 
     function apply(ctx) {
       // 设置窗口：GUI 设置面板中的一个「MemoryLeak」分区（与字体设置页同款槽位）。
