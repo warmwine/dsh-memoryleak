@@ -1,14 +1,13 @@
-# dsh-memoryleak 开发要则（DEVELOPMENT.md）
+# MemoryLeak 开发要则（DEVELOPMENT.md）
 
-本仓库是 DSH（DeepSeek Harness）的 memoryleak（记忆泄露）插件：取「内存泄露」
-同名梗——把记忆外化成文件，泄露给未来的自己。V1 从工作区待办扫描起步。
+本仓库是 DSH（DeepSeek Harness）的 MemoryLeak 插件。V1 从工作区待办扫描起步。
 本文是所有贡献者必须遵守的开发宪法 —— 先读这里，再动代码。
 
 ---
 
 ## 1. 项目主张
 
-1. **记忆泄露的核心资产是数据模型，不是界面。** 界面（设置窗口、命令卡片）随时
+1. **MemoryLeak 的核心资产是数据模型，不是界面。** 界面（设置窗口、命令卡片）随时
    可以换，`src/core/` 里的查询模型与格式引擎必须长期稳定。
 2. **为 AI 预留接缝，但不提前实现。** V1 只做 `- [ ]` 单行待办；但查询
    （`TodoQuery`）、解析（`TodoFormat`）、输出（`renderTodoJson`）都以「结构化

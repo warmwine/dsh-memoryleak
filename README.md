@@ -1,13 +1,12 @@
-# dsh-memoryleak —— DSH 记忆泄露插件
+# dsh-memoryleak —— DSH MemoryLeak 插件
 
-> memoryleak，取「内存泄露」同名梗：把记忆外化成文件，泄露给未来的自己。
-> 数据模型优先、格式可扩展、问题尽早暴露。
+> MemoryLeak：数据模型优先、格式可扩展、问题尽早暴露。
 
 [English](README.md) · 开发要则见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 
 ## 功能
 
-- **设置窗口**：GUI 设置面板新增「记忆泄露」分区（与「字体」设置页同款位置），
+- **设置窗口**：GUI 设置面板新增「MemoryLeak」分区（与「字体」设置页同款位置），
   可配置扫描扩展名、排除目录、文件/条目上限与 `/ml todo` 默认过滤词，持久化在
   `~/.dsh/settings.yaml` 的 `memoryleak:` 段，支持多窗口乐观并发。
 - **`/ml todo list` 命令**：扫描当前工作区 Markdown 文件中的待办
@@ -23,7 +22,7 @@
 | `/ml todo list all` / `open` / `done` | 同上，指定状态：全部 / 未完成 / 已完成 | **0** |
 | `/ml todo list <关键词>` | 同上，按关键词过滤（大小写不敏感，可与状态词组合） | **0** |
 | `/ml todo` | 省略操作默认 `list`，等价 `/ml todo list` | **0** |
-| 设置窗口「记忆泄露」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词（`/api/memoryleak/*` HTTP 路由） | **0** |
+| 设置窗口「MemoryLeak」分区 | 读写扫描扩展名、排除目录、上限、默认过滤词（`/api/memoryleak/*` HTTP 路由） | **0** |
 
 > 原理：`/ml` 注册在 dsh-commands 人类命令面（`ctx.commands.register`），命令文本与结果都不进模型历史（`command/run`/`command/done` 是 log-only 事件），因此零 token、不影响 KV cache。
 >

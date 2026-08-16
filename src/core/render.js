@@ -74,7 +74,7 @@ export function renderTodoText(report, query = createTodoQuery()) {
     }
   }
   const warnings = []
-  if (isTruncated(applied, report)) warnings.push(`${WARN} 已截断：达到条数上限 —— 可在设置「记忆泄露」中调大「最多条目」`)
+  if (isTruncated(applied, report)) warnings.push(`${WARN} 已截断：达到条数上限 —— 可在设置「MemoryLeak」中调大「最多条目」`)
   if (report.skipped.length > 0) {
     warnings.push(`${WARN} 跳过 ${report.skipped.length} 个超大文件：${report.skipped.map((entry) => entry.file).join('、')}`)
   }

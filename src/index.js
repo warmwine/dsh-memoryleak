@@ -62,7 +62,7 @@ export function apply(ctx) {
     () =>
       ctx.commands.register({
         name: 'ml',
-        description: '记忆泄露 memoryleak · /ml todo list：扫描当前工作区 Markdown 中的待办 [all|open|done] [关键词]',
+        description: 'MemoryLeak · /ml todo list：扫描当前工作区 Markdown 中的待办 [all|open|done] [关键词]',
         input: { hint: 'todo list [all|open|done] [关键词]' },
         handler: wrappedHandler,
       }),
