@@ -92,7 +92,7 @@ export function apply(ctx) {
       return { kind: 'success', text: `已记录 → ${record.file} ${where}${suffix}\n- ${record.note}` }
     }
     if (parsed.action === 'add') {
-      return addTodoFlow(cwd, settings, parsed.text, signal)
+      return addTodoFlow(agent, cwd, settings, parsed.text, signal)
     }
     const today = formatDate(new Date())
     const query = createTodoQuery({
@@ -106,8 +106,12 @@ export function apply(ctx) {
     return { kind: 'success', text: renderTodoText(report, query) }
   }
 
-  /** /ml todo add 的交互流：固定格式提问（类型 → 优先级 → 日期），全程无 LLM。 */
-  async function addTodoFlow(cwd, settings, text, signal) {
+  /**
+   * /ml todo add 的交互流：固定格式提问（类型 → 优先级 → 日期），全程无 LLM。
+   * ask 请求必须携带命令调用中的 agent：web Provider 依赖 agent.id 把弹窗
+   * 路由到正确的会话（缺省会 ASK_MISSING_AGENT 拒绝）。
+   */
+  async function addTodoFlow(agent, cwd, settings, text, signal) {
     const userQuestions = ctx.get('userQuestions')
     if (userQuestions === undefined) {
       return { kind: 'error', text: '当前环境没有可用的交互提问界面，无法运行 /ml todo add。' }
@@ -115,6 +119,7 @@ export function apply(ctx) {
 
     // 第一轮：类型 + 优先级（固定选项）
     const choice = await userQuestions.ask({
+      agent,
       signal,
       questions: [
         {
@@ -148,6 +153,7 @@ export function apply(ctx) {
     if (type === 'deadline' || type === 'sleep') {
       const hint = type === 'deadline' ? '截止日期' : '唤醒日期'
       const answer = await userQuestions.ask({
+        agent,
         signal,
         questions: [{ id: 'date', question: `${hint}是哪天？（yyyy-mm-dd）` }],
       })

@@ -409,7 +409,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
 
   const run = (rawInput) =>
     command.handler({
-      agent: { session: { header: { cwd: todoWs } } },
+      agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
       rawInput,
       signal: new AbortController().signal,
     })
@@ -425,6 +425,11 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     expect(host.askLog[0].questions.map((q) => q.id)).toEqual(['type', 'prio'])
     expect(host.askLog[0].questions[0].options).toHaveLength(3)
     expect(host.askLog[1].questions[0].options).toBeUndefined()
+    // web Provider 依赖 agent.id 路由弹窗（ASK_MISSING_AGENT 回归）
+    for (const request of host.askLog) {
+      expect(request.agent).toBeDefined()
+      expect(request.agent.id).toBeTypeOf('string')
+    }
     // 文件内容：## MemoryLeak 在前，## Todo 在后
     const daily = `${formatDate(new Date())}.md`
     const content = await readFile(join(todoWs, daily), 'utf8')
@@ -466,7 +471,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     apply(anytimeHost.ctx)
     const anytimeCommand = anytimeHost.commands.find((definition) => definition.name === 'ml')
     const result = await anytimeCommand.handler({
-      agent: { session: { header: { cwd: todoWs } } },
+      agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
       rawInput: 'todo add 整理收藏夹',
       signal: new AbortController().signal,
     })
@@ -483,7 +488,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     apply(badHost.ctx)
     const badCommand = badHost.commands.find((definition) => definition.name === 'ml')
     const result = await badCommand.handler({
-      agent: { session: { header: { cwd: todoWs } } },
+      agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
       rawInput: 'todo add 不该写入',
       signal: new AbortController().signal,
     })
@@ -496,7 +501,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     apply(badDateHost.ctx)
     const badDateCommand = badDateHost.commands.find((definition) => definition.name === 'ml')
     const result = await badDateCommand.handler({
-      agent: { session: { header: { cwd: todoWs } } },
+      agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
       rawInput: 'todo add 不该写入2',
       signal: new AbortController().signal,
     })
@@ -510,7 +515,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     apply(bareHost.ctx)
     const bareCommand = bareHost.commands.find((definition) => definition.name === 'ml')
     const result = await bareCommand.handler({
-      agent: { session: { header: { cwd: todoWs } } },
+      agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
       rawInput: 'todo add 无界面',
       signal: new AbortController().signal,
     })
