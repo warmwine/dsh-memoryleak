@@ -163,6 +163,21 @@ window.__ModuleLoader__.load({
           .then(() => setBusy(false));
       };
 
+      const [picking, setPicking] = React.useState(false);
+      const browse = () => {
+        setPicking(true);
+        apiPost("/pick-directory", {})
+          .then((body) => {
+            if (typeof body.path === "string" && body.path !== "") {
+              update({ vault: body.path });
+              setMessage(null);
+            }
+            // path:null = 用户取消或平台不支持 —— 静默
+          })
+          .catch((e) => setMessage({ kind: "error", text: "打开目录选择器失败：" + e.message }))
+          .then(() => setPicking(false));
+      };
+
       const rowStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: "1px solid rgba(128,128,128,.15)" };
       const labelStyle = { flex: "0 0 auto" };
       const controlStyle = { flex: "1 1 auto", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, minWidth: 0 };
@@ -184,12 +199,14 @@ window.__ModuleLoader__.load({
       return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
         React.createElement("h3", { style: { margin: "4px 0 8px" } }, "MemoryLeak"),
         row("Vault 目录",
-          React.createElement("input", {
-            value: draft.vault,
-            onChange: (event) => update({ vault: event.target.value }),
-            placeholder: "E:\\notes\\MLeak（留空 = 未初始化）",
-            style: { minWidth: 260, fontVariantNumeric: "tabular-nums" },
-          }),
+          React.createElement("div", { style: { display: "flex", gap: 8, flex: "1 1 auto", justifyContent: "flex-end", minWidth: 0 } },
+            React.createElement("button", { onClick: browse, disabled: picking || busy }, picking ? "打开中…" : "浏览…"),
+            React.createElement("input", {
+              value: draft.vault,
+              onChange: (event) => update({ vault: event.target.value }),
+              placeholder: "E:\\notes\\MLeak（留空 = 未初始化）",
+              style: { flex: "1 1 auto", minWidth: 160, fontVariantNumeric: "tabular-nums" },
+            })),
           "日志与待办的存放根目录；留空时执行任意 /ml 命令会引导选择。保存后自动把当前设置复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
         row("默认过滤",
           React.createElement("select", {
@@ -652,6 +669,7 @@ window.__ModuleLoader__.load({
     const ML_TYPE_QUESTION_ID = "ml-type";
     const ML_PRIO_QUESTION_ID = "ml-prio";
     const ML_DATE_QUESTION_ID = "ml-date";
+    const ML_VAULT_QUESTION_ID = "ml-vault";
     const ML_WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 
     // 悬停/禁用态用小样式表（内联样式做不了 :hover）；与 dsh 官方插件
@@ -1104,6 +1122,258 @@ window.__ModuleLoader__.load({
             }, busy ? "处理中…" : "取消"))));
     }
 
+    /* ---------------- Vault 引导卡（目录选择 + Tab 补全）----------------
+       认领宿主的 ml-vault 单问题请求：路径输入框 + 实时候选列表（宿主
+       /path/complete 列父目录下的子目录），Tab 补全 / ↑↓ 换高亮 /
+       Enter 确认 / Esc 取消；问题自带的快捷选项（如「当前会话的工作区」）
+       渲染成一行按钮，点选即答。手输完整路径 + Enter 也始终有效（目录
+       不存在时由宿主自动创建）。 */
+
+    /** chain select：只认领「单问题且 id === ml-vault」的 question 交互。 */
+    function mlSelectVaultQuestion(owner) {
+      const interactions = owner !== null && typeof owner === "object" && Array.isArray(owner.interactions) ? owner.interactions : [];
+      for (const interaction of interactions) {
+        if (interaction === null || typeof interaction !== "object" || interaction.kind !== "question") continue;
+        const questions = interaction.payload !== null && typeof interaction.payload === "object" && Array.isArray(interaction.payload.questions)
+          ? interaction.payload.questions
+          : [];
+        if (questions.length === 1 && questions[0] !== null && typeof questions[0] === "object" && questions[0].id === ML_VAULT_QUESTION_ID) {
+          return interaction;
+        }
+      }
+      return null;
+    }
+
+    /** base + 目录名 → 带尾分隔符的完整路径（盘符候选 name 自带尾分隔）。 */
+    function mlJoinDir(base, name) {
+      if (base === "") return /[\\/]$/.test(name) ? name : name + "\\";
+      const sepChar = base.includes("\\") ? "\\" : "/";
+      return base.replace(/[\\/]+$/, "") + sepChar + name + sepChar;
+    }
+
+    function MlVaultComposer({ matched }) {
+      const wait = matched;
+      const questions = wait !== null && typeof wait === "object" && wait.payload !== null && typeof wait.payload === "object" && Array.isArray(wait.payload.questions)
+        ? wait.payload.questions
+        : [];
+      const question = questions[0];
+      const [value, setValue] = React.useState("");
+      const [entries, setEntries] = React.useState(null); // null = 加载中
+      const [base, setBase] = React.useState("");
+      const [active, setActive] = React.useState(0);
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState(null);
+
+      const settle = (send) => {
+        setBusy(true);
+        setError(null);
+        send().catch((cause) => {
+          setBusy(false);
+          setError(cause instanceof Error ? cause.message : String(cause));
+        });
+      };
+      const answerCustom = (path) => settle(async () => {
+        const receipt = await wait.respond({
+          ok: true,
+          value: {
+            sessionId: wait.sessionId,
+            answer: { answers: [{ id: question.id, selected: [], custom: path }] },
+          },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("答案被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+      });
+      const answerOption = (label) => settle(async () => {
+        const receipt = await wait.respond({
+          ok: true,
+          value: {
+            sessionId: wait.sessionId,
+            answer: { answers: [{ id: question.id, selected: [label] }] },
+          },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("答案被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+      });
+      const cancelWait = () => settle(async () => {
+        const receipt = await wait.respond({
+          ok: false,
+          error: { code: "cancelled", message: "the user closed this question request", details: {} },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("取消被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+      });
+
+      // Esc 取消（capture；IME 组合中不拦）。
+      React.useEffect(() => {
+        if (busy) return undefined;
+        const onKey = (ev) => {
+          if (ev.key !== "Escape" || ev.isComposing === true) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          cancelWait();
+        };
+        document.addEventListener("keydown", onKey, true);
+        return () => document.removeEventListener("keydown", onKey, true);
+      });
+
+      // 输入变化 → 120ms 去抖拉候选；过期响应按序号丢弃；失败静默为空。
+      const fetchSeq = React.useRef(0);
+      React.useEffect(() => {
+        const seq = fetchSeq.current + 1;
+        fetchSeq.current = seq;
+        setEntries(null);
+        const timer = setTimeout(() => {
+          fetch(`${API}/path/complete?prefix=${encodeURIComponent(value)}`)
+            .then((res) => res.json())
+            .then((body) => {
+              if (seq !== fetchSeq.current) return;
+              if (body.ok !== true) throw new Error(body.error || "HTTP " + res.status);
+              setEntries(Array.isArray(body.entries) ? body.entries : []);
+              setBase(typeof body.base === "string" ? body.base : "");
+            })
+            .catch(() => {
+              if (seq === fetchSeq.current) setEntries([]);
+            });
+        }, 120);
+        return () => clearTimeout(timer);
+      }, [value]);
+      React.useEffect(() => { setActive(0); }, [value]);
+
+      // 兜底：载体形态不符不渲染（hook 之后返回，保证 hook 数稳定）。
+      if (wait === null || typeof wait !== "object" || question === null || typeof question !== "object") return null;
+
+      const list = entries ?? [];
+      const applyEntry = (entry) => {
+        if (entry === null || typeof entry !== "object" || typeof entry.name !== "string") return;
+        setValue(mlJoinDir(base, entry.name));
+      };
+      const confirmValue = () => {
+        if (busy) return;
+        const path = value.trim();
+        if (path === "") {
+          setError("先输入（或用 Tab 补全）一个目录路径");
+          return;
+        }
+        answerCustom(path);
+      };
+      const onInputKey = (ev) => {
+        if (ev.isComposing === true) return;
+        if (ev.key === "ArrowDown" && list.length > 0) {
+          ev.preventDefault();
+          setActive((index) => Math.min(index + 1, list.length - 1));
+        } else if (ev.key === "ArrowUp" && list.length > 0) {
+          ev.preventDefault();
+          setActive((index) => Math.max(index - 1, 0));
+        } else if (ev.key === "Tab") {
+          ev.preventDefault();
+          if (list.length > 0) applyEntry(list[Math.min(active, list.length - 1)]);
+        } else if (ev.key === "Enter") {
+          ev.preventDefault();
+          confirmValue();
+        }
+      };
+
+      const quickOptions = question.options !== undefined && Array.isArray(question.options)
+        ? question.options.filter((o) => o !== null && typeof o === "object" && typeof o.label === "string")
+        : [];
+      const title = typeof question.question === "string" && question.question !== "" ? question.question : "选择 Vault 目录";
+      const eyebrow = typeof question.header === "string" && question.header !== "" ? question.header : "MemoryLeak 初始化";
+
+      const inputStyle = {
+        width: "100%", minHeight: 36, padding: "6px 12px",
+        border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 10,
+        background: "var(--dsw-specific-input-major)", color: "var(--dsw-alias-label-primary)",
+        fontSize: 14, lineHeight: "22px", fontVariantNumeric: "tabular-nums",
+      };
+      const quickRowStyle = { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 };
+      const quickBtnStyle = {
+        display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1,
+        cursor: "pointer", background: "transparent",
+        border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 12,
+        padding: "6px 12px", color: "var(--dsw-alias-label-primary)",
+      };
+      const quickDescStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "14px" };
+      const listStyle = {
+        marginTop: 8, borderRadius: 10, padding: 4,
+        maxHeight: 208, overflowY: "auto",
+        "--dsh-scrollbar-thumb": "var(--dsw-alias-scrollbar-bg-l2)",
+        "--dsh-scrollbar-thumb-hover": "var(--dsw-alias-scrollbar-hover-l2)",
+      };
+      const rowItemStyle = (isActive) => ({
+        width: "100%", minHeight: 34, display: "flex", alignItems: "center", gap: 8,
+        cursor: "pointer", textAlign: "left", border: "none",
+        background: isActive ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+        borderRadius: 8, padding: "5px 10px", color: "var(--dsw-alias-label-primary)",
+        fontSize: 14, lineHeight: "20px",
+      });
+      const folderGlyphStyle = { flex: "0 0 auto", color: "var(--dsw-alias-label-primary-bluish)", fontSize: 13 };
+      const baseHintStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "16px", margin: "6px 2px 0" };
+      const statusStyle = (isError) => ({
+        color: isError ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-tertiary)",
+        fontSize: 12, lineHeight: "16px", minWidth: 0,
+      });
+      const primaryBtnStyle = {
+        flexShrink: 0, minHeight: 28, padding: "0 14px", cursor: "pointer",
+        background: "transparent", border: "1px solid var(--dsw-alias-border-l1)",
+        borderRadius: 8, fontSize: 13, lineHeight: "20px", color: "var(--dsw-alias-label-primary)",
+      };
+
+      return React.createElement("div", { style: ML_FRAME_STYLE, "data-ml-vault-question": wait.key },
+        React.createElement("section", { style: ML_CARD_STYLE, "aria-label": title },
+          React.createElement("header", { style: ML_HEADER_STYLE },
+            React.createElement("div", null,
+              React.createElement("div", { style: ML_EYEBROW_STYLE }, eyebrow),
+              React.createElement("h2", { style: ML_TITLE_STYLE }, title)),
+            React.createElement("button", {
+              type: "button", style: ML_CLOSE_BTN_STYLE, className: "ml-vault-cancel",
+              "aria-label": "取消", title: "取消（Esc）", disabled: busy, onClick: cancelWait,
+            }, "✕")),
+          React.createElement("div", { style: ML_BODY_STYLE, "data-ml-vault-scroll": true },
+            quickOptions.length > 0
+              ? React.createElement("div", { style: quickRowStyle },
+                  quickOptions.map((option) => React.createElement("button", {
+                    key: option.label, type: "button", style: quickBtnStyle, className: "ml-vault-quick",
+                    disabled: busy, onClick: () => answerOption(option.label),
+                  },
+                    React.createElement("span", null, option.label),
+                    typeof option.description === "string" ? React.createElement("span", { style: quickDescStyle }, option.description) : null)))
+              : null,
+            React.createElement("input", {
+              type: "text", style: inputStyle, className: "ml-vault-input",
+              value, autoFocus: true, spellCheck: false, disabled: busy,
+              placeholder: "E:\\notes\\MLeak（Tab 补全，~ 开头为用户目录）",
+              onChange: (event) => setValue(event.target.value),
+              onKeyDown: onInputKey,
+            }),
+            base !== "" && list.length > 0
+              ? React.createElement("div", { style: baseHintStyle }, "在 " + base + " 下：")
+              : null,
+            entries === null
+              ? React.createElement("div", { style: baseHintStyle }, "正在读取目录…")
+              : list.length === 0
+                ? React.createElement("div", { style: baseHintStyle }, value.trim() === "" ? "输入路径开始，或直接确认使用用户目录" : "此路径下没有匹配的子目录（Enter 仍可确认，不存在会自动创建）")
+                : React.createElement("div", { style: listStyle, role: "listbox", "aria-label": "候选目录" },
+                    list.map((entry, index) => React.createElement("button", {
+                      key: entry.name, type: "button",
+                      style: rowItemStyle(index === active), className: "ml-vault-entry",
+                      role: "option", "aria-selected": index === active, disabled: busy,
+                      onMouseDown: (ev) => { ev.preventDefault(); applyEntry(entry); },
+                      onMouseEnter: () => setActive(index),
+                    },
+                      React.createElement("span", { style: folderGlyphStyle, "aria-hidden": "true" }, "▸"),
+                      React.createElement("span", null, entry.name))))),
+          React.createElement("footer", { style: ML_FOOTER_STYLE },
+            React.createElement("span", { style: statusStyle(error !== null), role: "status" },
+              error !== null ? error : "Tab 补全 · ↑↓ 选择 · Enter 确认 · Esc 取消"),
+            React.createElement("button", {
+              type: "button", style: primaryBtnStyle, className: "ml-vault-confirm",
+              disabled: busy, onClick: confirmValue,
+            }, busy ? "处理中…" : "选择此目录"))));
+    }
+
     /* ---------------- 插件入口 ---------------- */
     // sessions/conversation 是槽位 inject 工厂里解析会话输入 shell 的硬依赖，
     // 必须声明，否则运行时报 cannot get property "sessions" without inject。
@@ -1138,6 +1408,13 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("conversation.composer", () => ctx.slots.register(
         { name: "conversation.composer", priority: -100, select: mlSelectDateQuestion },
         MlDateComposer
+      ));
+
+      // Vault 引导（vault 未设置时的 ml-vault 单问题）：接管渲染目录选择卡
+      //（路径输入 + Tab 补全候选 + 当前工作区快捷选项），选完即答。
+      ctx.slots.inject("conversation.composer", () => ctx.slots.register(
+        { name: "conversation.composer", priority: -100, select: mlSelectVaultQuestion },
+        MlVaultComposer
       ));
 
       // 命令菜单选中 /ml → 快速打开弹窗（VSCode Ctrl+P 风格查看文件）。

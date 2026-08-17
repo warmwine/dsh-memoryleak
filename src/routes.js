@@ -10,6 +10,11 @@
  *   GET  /api/memoryleak/formats         → { ok, formats: [{ id, title, priority }] }
  *   GET  /api/memoryleak/files?limit=    → { ok, files: [{ name, bytes }] }（快速打开
  *                                         弹窗的候选源；根目录 = 设置的 Vault）
+ *   GET  /api/memoryleak/path/complete?prefix=
+ *                                       → { ok, base, entries }（Vault 选择卡
+ *                                         的目录补全；读失败静默空列表）
+ *   POST /api/memoryleak/pick-directory  → { ok, path: string | null }（系统
+ *                                         目录选择对话框；取消/不支持为 null）
  *
  * 失败一律显式返回 { ok: false, error }，绝不静默。
  *
@@ -18,7 +23,8 @@
 import { MEMORYLEAK_SETTINGS_NAMESPACE, MEMORYLEAK_SETTINGS_DEFAULTS, resolveMemoryleakSettings } from './settings-schema.js'
 import { listWorkspaceFiles } from './journal.js'
 import { dailyFileName, weeklyFileName } from './core/journal.js'
-import { ensureVaultSettingsFile, resolveEffectiveSettings } from './vault.js'
+import { ensureVaultSettingsFile, resolveEffectiveSettings, completeVaultPath } from './vault.js'
+import { execFile } from 'node:child_process'
 
 /** 浏览器侧 API 前缀。 */
 export const MEMORYLEAK_API_PREFIX = '/api/memoryleak'
@@ -75,14 +81,50 @@ function revisionOf(ctx) {
 }
 
 /**
+ * Windows 原生目录选择对话框（PowerShell FolderBrowserDialog，STA）。
+ * 返回选中路径；取消 / 出错 / 非Windows 返回 null。对话框期间请求挂起
+ * （异步等待，不阻塞服务），用户长时间开着也没关系。
+ *
+ * @returns {Promise<string | null>}
+ */
+function nativePickDirectory() {
+  return new Promise((resolvePromise) => {
+    if (process.platform !== 'win32') {
+      resolvePromise(null)
+      return
+    }
+    const script =
+      "Add-Type -AssemblyName System.Windows.Forms; " +
+      "$d = New-Object System.Windows.Forms.FolderBrowserDialog; " +
+      "$d.Description = '选择 MemoryLeak Vault 目录'; " +
+      "$d.ShowNewFolderButton = $true; " +
+      "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out::Write($d.SelectedPath) }"
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-STA', '-NonInteractive', '-Command', script],
+      { timeout: 15 * 60 * 1000, windowsHide: true, maxBuffer: 64 * 1024 },
+      (error, stdout) => {
+        if (error) {
+          resolvePromise(null)
+          return
+        }
+        const path = String(stdout).trim()
+        resolvePromise(path === '' ? null : path)
+      },
+    )
+  })
+}
+
+/**
  * 构造全部路由（由宿主半注册，随插件停用回收）。
  *
  * @param {object} deps
  * @param {object} deps.ctx 宿主上下文（settings 服务，用于 revision 与整段重置）
  * @param {{ get(): unknown, update(patch: object, expectedRevision?: number): Promise<void> }} deps.scope
  * @param {object} deps.registry TodoFormatRegistry
+ * @param {() => Promise<string | null>} [deps.pickDirectory] 原生目录选择（测试注入用）
  */
-export function makeMemoryleakRoutes({ ctx, scope, registry }) {
+export function makeMemoryleakRoutes({ ctx, scope, registry, pickDirectory = nativePickDirectory }) {
   /** GET /settings：读当前段 + 修订号 + 默认值。 */
   function handleGetSettings(req, res) {
     if (!requireMethod(req, res, 'GET')) return
@@ -211,7 +253,39 @@ export function makeMemoryleakRoutes({ ctx, scope, registry }) {
     },
   }
 
-  return [settingsRoute, postReset, getFormats, getFiles]
+  /** GET /path/complete?prefix=：目录补全候选（读失败静默为空，永不 5xx）。 */
+  const getPathComplete = {
+    kind: 'exact',
+    path: `${MEMORYLEAK_API_PREFIX}/path/complete`,
+    handler: (req, res) => {
+      if (!requireMethod(req, res, 'GET')) return
+      Promise.resolve()
+        .then(async () => {
+          const url = new URL(req.url, 'http://local')
+          const prefix = url.searchParams.get('prefix') ?? ''
+          const { base, entries } = await completeVaultPath(prefix)
+          json(res, 200, { ok: true, base, entries })
+        })
+        .catch((error) => json(res, 500, { ok: false, error: errorMessage(error) }))
+    },
+  }
+
+  /** POST /pick-directory：系统目录选择对话框；取消/不支持 → path: null。 */
+  const postPickDirectory = {
+    kind: 'exact',
+    path: `${MEMORYLEAK_API_PREFIX}/pick-directory`,
+    handler: (req, res) => {
+      if (!requireMethod(req, res, 'POST')) return
+      Promise.resolve()
+        .then(() => pickDirectory())
+        .then((path) => {
+          json(res, 200, { ok: true, path: typeof path === 'string' && path !== '' ? path : null })
+        })
+        .catch((error) => json(res, 500, { ok: false, error: errorMessage(error) }))
+    },
+  }
+
+  return [settingsRoute, postReset, getFormats, getFiles, getPathComplete, postPickDirectory]
 }
 
 function errorMessage(error) {

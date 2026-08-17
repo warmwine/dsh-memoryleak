@@ -183,10 +183,12 @@ describe('宿主插件装配（apply）', () => {
     }
   })
 
-  it('注册 3 条 API 路由（GET/POST /settings 合一）与 1 条 /ml 命令', () => {
+  it('注册 5 条 API 路由（GET/POST /settings 合一）与 1 条 /ml 命令', () => {
     expect(host.routes.map((route) => `${route.kind} ${route.path}`).sort()).toEqual([
       'exact /api/memoryleak/files',
       'exact /api/memoryleak/formats',
+      'exact /api/memoryleak/path/complete',
+      'exact /api/memoryleak/pick-directory',
       'exact /api/memoryleak/settings',
       'exact /api/memoryleak/settings/reset',
     ])
@@ -353,7 +355,7 @@ describe('宿主插件装配（apply）', () => {
     for (const dispose of host.effects) dispose()
     expect(host.routes).toHaveLength(0)
     expect(host.commands).toHaveLength(0)
-    expect(routesBefore).toBe(4)
+    expect(routesBefore).toBe(6)
     expect(commandsBefore).toBe(1)
   })
 })
@@ -1024,5 +1026,64 @@ describe('Vault 初始化与设置分层（端到端）', () => {
     expect(result.kind).toBe('error')
     expect(result.text).toContain('Vault 目录')
     expect(result.text).toContain('设置')
+  })
+
+  it('GET /path/complete：列出前缀匹配的子目录（只目录、读失败静默空）', async () => {
+    const tree = await mkdtemp(join(tmpdir(), 'dsh-ml-complete-'))
+    try {
+      await mkdir(join(tree, 'alpha'), { recursive: true })
+      await mkdir(join(tree, 'beta-dir'), { recursive: true })
+      await writeFile(join(tree, 'gamma.txt'), 'x')
+      const vhost = createFakeHost({})
+      apply(vhost.ctx)
+      const route = vhost.routes.find((entry) => entry.path === '/api/memoryleak/path/complete')
+      const call = async (prefix) => invokeRoute(route, 'GET', undefined, `${route.path}?prefix=${encodeURIComponent(prefix)}`)
+      // 空匹配：列出全部子目录（文件被排除）
+      const all = await call(tree + '/')
+      expect(all.status).toBe(200)
+      expect(all.body.ok).toBe(true)
+      expect(all.body.base).toBe(tree.replace(/[\\/]+$/, ''))
+      expect(all.body.entries.map((entry) => entry.name)).toEqual(['alpha', 'beta-dir'])
+      // 前缀过滤（大小写不敏感）
+      const filtered = await call(tree + '/AL')
+      expect(filtered.body.entries.map((entry) => entry.name)).toEqual(['alpha'])
+      // 无匹配 → 空（不是 5xx）
+      const none = await call(tree + '/zz')
+      expect(none.status).toBe(200)
+      expect(none.body.entries).toEqual([])
+      // 不存在的目录 → 静默空
+      const missing = await call(join(tree, 'nope', 'x'))
+      expect(missing.status).toBe(200)
+      expect(missing.body.entries).toEqual([])
+    } finally {
+      await rm(tree, { recursive: true, force: true })
+    }
+  })
+
+  it('POST /pick-directory：原生选择器结果透传；取消/不支持为 null', async () => {
+    // 直接构造路由（pickDirectory 注入桩，不真弹系统对话框）
+    const { makeMemoryleakRoutes } = await import('../src/routes.js')
+    const fakeCtx = {
+      settings: { describe: () => [] },
+    }
+    const fakeScope = { get: () => ({}) }
+    const callWith = async (stub) => {
+      const routes = makeMemoryleakRoutes({ ctx: fakeCtx, scope: fakeScope, registry: { descriptors: [] }, pickDirectory: stub })
+      const route = routes.find((entry) => entry.path === '/api/memoryleak/pick-directory')
+      return invokeRoute(route, 'POST', {})
+    }
+    const picked = await callWith(async () => 'E:\\picked\\dir')
+    expect(picked.status).toBe(200)
+    expect(picked.body).toEqual({ ok: true, path: 'E:\\picked\\dir' })
+    const cancelled = await callWith(async () => null)
+    expect(cancelled.body).toEqual({ ok: true, path: null })
+    const failed = await callWith(async () => { throw new Error('boom') })
+    expect(failed.status).toBe(500)
+    expect(failed.body.ok).toBe(false)
+    // 方法错误
+    const routes = makeMemoryleakRoutes({ ctx: fakeCtx, scope: fakeScope, registry: { descriptors: [] }, pickDirectory: async () => null })
+    const route = routes.find((entry) => entry.path === '/api/memoryleak/pick-directory')
+    const wrong = await invokeRoute(route, 'GET')
+    expect(wrong.status).toBe(405)
   })
 })

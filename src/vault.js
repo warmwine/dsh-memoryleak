@@ -17,7 +17,8 @@
  *
  * @module dsh-memoryleak/vault
  */
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import YAML from 'yaml'
 import { resolveMemoryleakSettings } from './settings-schema.js'
@@ -144,4 +145,80 @@ export async function ensureVaultSettingsFile(vaultDir, section) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error)
+}
+
+/* ---------------- 路径补全（引导卡 / 设置页共用的候选源） ---------------- */
+
+/** 单次补全返回的候选上限。 */
+const COMPLETE_LIMIT = 60
+
+/** 当前平台是否 Windows（决定盘符探测分支）。 */
+const IS_WIN = process.platform === 'win32'
+
+/**
+ * 按输入前缀列出可作为 Vault 候选的子目录。
+ *
+ * 约定（客户端按此拼接）：base 是候选所在的父目录（规范化的绝对形式，
+ * 盘符候选时为空串），entries 是其下名字以输入尾部匹配的目录名列表。
+ * 任何读失败（不存在 / 无权限）都返回空列表 —— 补全永远不抛。
+ *
+ * @param {string} prefix 输入框当前内容（支持 ~ 前缀展开；Windows 支持
+ *   单字母探测盘符、`E:` 视为 `E:\`）
+ * @returns {Promise<{ base: string, entries: { name: string }[] }>}
+ */
+export async function completeVaultPath(prefix) {
+  let input = typeof prefix === 'string' ? prefix.trim() : ''
+  if (input.startsWith('~')) input = homedir() + input.slice(1)
+  if (input === '') return { base: homedir(), entries: await listDirs(homedir()) }
+  if (IS_WIN && /^[a-zA-Z]$/.test(input)) {
+    const root = input.toUpperCase() + ':\\'
+    try {
+      await stat(root)
+      return { base: '', entries: [{ name: root }] }
+    } catch {
+      return { base: '', entries: [] }
+    }
+  }
+  if (IS_WIN && /^[a-zA-Z]:$/.test(input)) {
+    const root = input.toUpperCase() + ':\\'
+    return { base: root, entries: await listDirs(root) }
+  }
+  const dir = dirnameOf(input)
+  const match = basenameOf(input).toLowerCase()
+  return { base: dir, entries: await listDirs(dir, match) }
+}
+
+/** readdir 只取目录，按名字排序并截断；任何失败按无候选处理。 */
+async function listDirs(dir, match = '') {
+  try {
+    const dirents = await readdir(dir, { withFileTypes: true })
+    return dirents
+      .filter((entry) => entry.isDirectory() && entry.name.toLowerCase().startsWith(match))
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      .slice(0, COMPLETE_LIMIT)
+      .map((entry) => ({ name: entry.name }))
+  } catch {
+    return []
+  }
+}
+
+/** dirname 的本地封装：以分隔符结尾的输入，目录就是它本身（列其内容）。 */
+function dirnameOf(input) {
+  if (/[\\/]$/.test(input)) {
+    const trimmed = input.replace(/[\\/]+$/, '')
+    if (trimmed === '') return input
+    if (/^[a-zA-Z]:$/.test(trimmed)) return trimmed + '\\'
+    return trimmed
+  }
+  const slash = Math.max(input.lastIndexOf('/'), input.lastIndexOf('\\'))
+  if (slash < 0) return '.'
+  if (slash === 0) return input.charAt(0)
+  return input.slice(0, slash)
+}
+
+/** basename 的本地封装：以分隔符结尾的输入没有尾段（匹配空前缀）。 */
+function basenameOf(input) {
+  if (input.length > 0 && /[\\/]$/.test(input)) return ''
+  const slash = Math.max(input.lastIndexOf('/'), input.lastIndexOf('\\'))
+  return slash < 0 ? input : input.slice(slash + 1)
 }
