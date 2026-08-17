@@ -104,8 +104,9 @@ export function apply(ctx) {
   /**
    * 命令处理器：vault 门控 + 分发。
    *
-   * Vault 未设置时，除 help 外的任何命令都先走一次性引导（选择本地目录），
-   * 成功后继续执行原命令；此后所有读写都以 vault 为根，不再跟随会话工作区。
+   * 严格门控：Vault 未设置时，除 help / init 外的一切命令直接报错，
+   * 提示先执行 /ml init——init 是唯一的目录设置入口（也可在 GUI 设置里
+   * 填写/清除），不自动弹引导。设置后所有读写都以 vault 为根。
    *
    * @param {{ agent: { session?: { header?: { cwd?: string } } }, rawInput: string, signal: AbortSignal }} invocation
    * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
@@ -115,21 +116,15 @@ export function apply(ctx) {
     if (parsed.family === 'help') {
       return { kind: 'success', text: renderMlHelp() }
     }
-    let globalSettings = resolveMemoryleakSettings(scope.get())
-    let setupNote = ''
+    if (parsed.family === 'init') {
+      return initVaultCommand(agent, signal)
+    }
+    const globalSettings = resolveMemoryleakSettings(scope.get())
     if (globalSettings.vault === '') {
-      const setup = await runVaultSetup(agent, signal)
-      if (setup.kind === 'error') return setup
-      setupNote = `已设置 Vault → ${setup.vault}\n`
-      globalSettings = resolveMemoryleakSettings(scope.get())
+      return { kind: 'error', text: '尚未设置 Vault 目录——先执行 /ml init 指定（或在 GUI 设置 → MemoryLeak 填写）。' }
     }
-    const cwd = globalSettings.vault
     const settings = await resolveEffectiveSettings(globalSettings)
-    const result = await dispatchMlCommand({ agent, rawInput, signal, parsed, cwd, settings })
-    if (setupNote !== '' && result.kind === 'success') {
-      return { kind: 'success', text: setupNote + result.text }
-    }
-    return result
+    return dispatchMlCommand({ agent, rawInput, signal, parsed, cwd: globalSettings.vault, settings })
   }
 
   /** vault 就绪后的实际分发（原命令处理器主体，cwd 即 vault）。 */
@@ -253,18 +248,20 @@ export function apply(ctx) {
   }
 
   /**
-   * Vault 一次性引导：问目录（可选项带当前会话工作区，也可手输路径）→
-   * 准备目录（缺失则创建）→ 存进全局设置（~/.dsh/settings.yaml）→ 把
-   * 当时生效的设置复制为 vault 内的 .memoryleak.yaml（已存在则保留，
-   * 它优先级更高）。之后由调用方重新读设置并继续原命令。
+   * /ml init：指定/更换 Vault 目录。弹出目录选择卡（web 端由客户端半
+   * 接管渲染：路径输入 + Tab 补全 + 系统对话框；其余环境自由输入）→
+   * 准备目录（缺失则创建）→ 存进全局设置（~/.dsh/settings.yaml）→
+   * 把当时生效的设置复制为 vault 内的 .memoryleak.yaml（已存在则保留，
+   * 它优先级更高）。已设置过时同样可执行 = 换目录。
    *
-   * @returns {Promise<{ kind: 'ok', vault: string } | { kind: 'error', text: string }>}
+   * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
    */
-  async function runVaultSetup(agent, signal) {
+  async function initVaultCommand(agent, signal) {
     const userQuestions = ctx.get('userQuestions')
     if (userQuestions === undefined) {
-      return { kind: 'error', text: '尚未设置 MemoryLeak 的 Vault 目录，且当前环境没有交互提问界面。请在 GUI 设置 → MemoryLeak 中填写「Vault 目录」后重试。' }
+      return { kind: 'error', text: '当前环境没有可用的交互提问界面，无法执行 /ml init。请在 GUI 设置 → MemoryLeak 中填写「Vault 目录」。' }
     }
+    const previous = resolveMemoryleakSettings(scope.get()).vault
     const sessionCwd = agent !== null && typeof agent === 'object' && typeof agent.session?.header?.cwd === 'string' ? agent.session.header.cwd : ''
     const answer = await userQuestions.ask({
       agent,
@@ -272,8 +269,8 @@ export function apply(ctx) {
       questions: [
         {
           id: ML_VAULT_QUESTION_ID,
-          header: 'MemoryLeak 初始化',
-          question: '选择 Vault 目录（日志与待办的存放位置；输入本地文件夹路径，或选当前工作区）',
+          header: 'MemoryLeak Vault',
+          question: previous === '' ? '选择 Vault 目录（日志与待办的存放位置）' : `更换 Vault 目录（当前：${previous}）`,
           options: sessionCwd === '' ? [] : [{ label: sessionCwd, description: '当前会话的工作区' }],
         },
       ],
@@ -283,7 +280,7 @@ export function apply(ctx) {
     const custom = typeof entry?.custom === 'string' ? entry.custom.trim() : ''
     const raw = custom !== '' ? custom : typeof picked === 'string' ? picked : ''
     if (raw === '') {
-      return { kind: 'error', text: '没有收到有效的目录路径，未设置 Vault。重新执行命令可再次选择，或在 GUI 设置 → MemoryLeak 中填写。' }
+      return { kind: 'error', text: '没有收到有效的目录路径，Vault 未变更。' }
     }
     let vaultDir
     try {
@@ -302,7 +299,14 @@ export function apply(ctx) {
     } catch (error) {
       return { kind: 'error', text: `写入 ${VAULT_SETTINGS_FILENAME} 失败：${error instanceof Error ? error.message : String(error)}` }
     }
-    return { kind: 'ok', vault: vaultDir }
+    return {
+      kind: 'success',
+      text: [
+        `Vault 已设置 → ${vaultDir}`,
+        `设置文件：${VAULT_SETTINGS_FILENAME}（此文件里的键优先级高于全局设置）`,
+        '现在可以用 /ml <文本> 记录、/ml todo 管待办、/ml view 查看了。',
+      ].join('\n'),
+    }
   }
 
   /**

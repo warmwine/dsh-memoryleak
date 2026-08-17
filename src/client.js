@@ -203,7 +203,7 @@ window.__ModuleLoader__.load({
         React.createElement("div", { key: "Vault 目录", style: { padding: "8px 0", borderBottom: "1px solid rgba(128,128,128,.15)" } },
           React.createElement("span", null, "Vault 目录"),
           React.createElement("p", { style: hintStyle },
-            "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框。留空时执行任意 /ml 命令会引导选择。保存后自动复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
+            "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框，「清除」置空（保存后生效，之后命令会提示先 /ml init）。保存时自动复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
           React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 6 } },
             React.createElement("button", { onClick: browse, disabled: picking || busy, style: { flex: "0 0 auto" } }, picking ? "打开中…" : "浏览…"),
             React.createElement("input", {
@@ -211,7 +211,12 @@ window.__ModuleLoader__.load({
               onChange: (event) => update({ vault: event.target.value }),
               placeholder: "E:\\notes\\MLeak（留空 = 未初始化）",
               style: { flex: "1 1 auto", minWidth: 0, width: "auto", fontVariantNumeric: "tabular-nums" },
-            }))),
+            }),
+            React.createElement("button", {
+              onClick: () => { update({ vault: "" }); setMessage({ kind: "ok", text: "Vault 已清空，点「保存」生效" }); },
+              disabled: busy || draft.vault.trim() === "",
+              style: { flex: "0 0 auto" },
+            }, "清除"))),
         row("默认过滤",
           React.createElement("select", {
             value: draft.defaultStatus,
@@ -408,11 +413,10 @@ window.__ModuleLoader__.load({
           } catch {
             unreachable = true;
           }
-          // Vault 未设置 / 服务不可达：不是错误——给一个「初始化」条目，
-          // 选中即执行 /ml view 触发宿主的 Vault 引导（任何非 help 命令
-          // 都会引导）。快速打开是便利层，绝不能拦住命令本身。
+          // Vault 未设置 / 服务不可达：给「初始化」条目，选中即执行
+          // /ml init（唯一严格的目录设置入口）。
           if (unreachable) {
-            return [{ id: "__ml_setup__", label: "初始化 Vault 目录…", detail: "尚未设置存放目录" }];
+            return [{ id: "__ml_setup__", label: "初始化 Vault 目录…（/ml init）", detail: "尚未设置存放目录" }];
           }
           const files = Array.isArray(body.files) ? body.files : []
           if (files.length === 0) return []
@@ -425,7 +429,7 @@ window.__ModuleLoader__.load({
         async onSelect(option, session) {
           const sessionId = session !== null && typeof session === "object" ? session.sessionId : undefined
           if (typeof sessionId !== "string" || sessionId === "") throw new Error("无法定位当前会话")
-          const line = option.id === "__ml_setup__" ? "/ml view" : `/ml view ${option.id}`
+          const line = option.id === "__ml_setup__" ? "/ml init" : `/ml view ${option.id}`
           const result = await ctx.remote.commands.execute(sessionId, line)
           if (!result.ok) throw new Error(`执行失败：${result.error?.message ?? result.error?.code ?? "未知错误"}`)
         },

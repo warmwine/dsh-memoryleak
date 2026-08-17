@@ -1,17 +1,20 @@
 /**
  * /ml 命令文法（纯函数，独立测试）。
  *
- * V1 文法（四个家族）：
- *   /ml <文本>                          → 记一笔：写入工作区日志/周志的 ## MemoryLeak
+ * V1 文法（五个家族）：
+ *   /ml init                            → 指定/更换 Vault 目录（日志与待办的存放根）
+ *   /ml <文本>                          → 记一笔：写入 Vault 日志/周志的 ## MemoryLeak
  *   /ml todo n|add <文本>               → 添加结构化待办（提问类型/优先级/日期）到 ## Todo
- *   /ml todo l|list [状态] [关键词]      → 列出工作区 Markdown 待办（默认隐藏未唤醒的 sleep）
+ *   /ml todo l|list [状态] [关键词]      → 列出 Vault Markdown 待办（默认隐藏未唤醒的 sleep）
  *   /ml todo d|done <n>                 → 切换最近一次 list 结果中第 n 条的完成态
  *   /ml todo u|undo                     → 撤销最近一次 d（可连续撤销，LIFO）
  *   /ml view|v [文件名片段]              → 显示当前日志/周志，或模糊匹配并显示指定文件
  *   /ml help|h                          → 命令一览（汇总说明）
  *
- * 家族判定：第一个词是 `todo` / `view` / `help` 即对应家族（保留字，记录文本
- * 以它们开头时请换措辞）；其余一切非空输入都是记录文本。
+ * 家族判定：第一个词是 `init` / `todo` / `view` / `help` 即对应家族（保留字，
+ * 记录文本以它们开头时请换措辞）；其余一切非空输入都是记录文本。
+ * Vault 未设置时，除 help / init 外的所有命令在分发层直接报错——init 是
+ * 唯一的设置入口，不自动弹引导。
  * 状态默认值不在这里决定 —— 由设置命名空间的 defaultStatus 注入（查询模型
  * 与文法分离，AI 未来可以绕过文法直接给结构化查询）。
  *
@@ -20,11 +23,13 @@
 import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
 
-export const ML_USAGE = '/ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号> · /ml todo u · /ml view [文件名片段] · /ml help'
+export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号> · /ml todo u · /ml view [文件名片段] · /ml help'
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
  * @returns {{
+ *   family: 'init'
+ * } | {
  *   family: 'journal', text: string
  * } | {
  *   family: 'help'
@@ -52,6 +57,10 @@ export function parseMlArgs(rawInput) {
   const [family, action, ...rest] = tokens
   if (family === 'help' || family === 'h') {
     return { family: 'help' }
+  }
+  if (family === 'init') {
+    if (action !== undefined) throw new TodoUsageError('用法：/ml init（不带参数；目录在选择卡里挑）')
+    return { family: 'init' }
   }
   if (family === 'view' || family === 'v') {
     const text = [action, ...rest].filter((token) => token !== undefined && token !== '').join(' ')
@@ -98,8 +107,11 @@ export function renderMlHelp() {
   return [
     'MemoryLeak · /ml 命令一览',
     '',
+    '/ml init',
+    '  指定/更换 Vault 目录（日志与待办的存放根；目录选择卡支持 Tab 补全',
+    '  与系统对话框）。Vault 未设置时，其他命令都会提示先执行本命令',
     '/ml <文本>',
-    '  记一笔：写入工作区日志/周志的 ## MemoryLeak 模块（无则按模板新建）',
+    '  记一笔：写入 Vault 日志/周志的 ## MemoryLeak 模块（无则按模板新建）',
     '/ml todo add <待办内容>（简写 /ml todo n）',
     '  新增结构化待办：固定表单选类型 deadline/sleep/anytime 与重要程度',
     '  紧急/中等/低（deadline/sleep 再问日期），写入 ## Todo 模块',

@@ -50,6 +50,7 @@ describe('parseMlArgs（/ml 文法）', () => {
     it('renderMlHelp 覆盖全部已注册命令（全称与简写都可搜到）', () => {
       const help = renderMlHelp()
       for (const fragment of [
+        '/ml init',
         '/ml <文本>',
         '/ml todo add <待办内容>',
         '/ml todo n',
@@ -65,6 +66,15 @@ describe('parseMlArgs（/ml 文法）', () => {
       }
       // 帮助里不该出现未实现的命令
       expect(help).not.toMatch(/\/ml todo (?!add|list|n|l|d|u|done|undo)\w+/)
+    })
+
+    it('init：严格无参数（Vault 设置的唯一入口）', () => {
+      expect(parseMlArgs('init')).toEqual({ family: 'init' })
+      expect(parseMlArgs('  init  ')).toEqual({ family: 'init' })
+      expect(() => parseMlArgs('init E:/x')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('init x')).toThrow(/不带参数/)
+      // 复数不保留：initiates 是记录文本
+      expect(parseMlArgs('initiates something')).toEqual({ family: 'journal', text: 'initiates something' })
     })
 
     it('view / v：无参数看当前日志，带参数为模糊查询', () => {

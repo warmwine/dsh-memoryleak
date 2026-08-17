@@ -324,17 +324,17 @@ describe('宿主插件装配（apply）', () => {
     expect(result).toEqual({ kind: 'error', text: expect.stringContaining('未知操作') })
   })
 
-  it('vault 未设置：命令先引导选择（不再看会话工作区）', async () => {
+  it('vault 未设置：除 help/init 外的命令直接报错并提示 /ml init（不弹引导）', async () => {
     await host.settings.update('memoryleak', { vault: '' })
-    const result = await command.handler({ agent: { session: { header: {} } }, rawInput: 'todo', signal: new AbortController().signal })
-    // 伪 ask 没有 ml-vault 预设答案 → 引导收不到路径，明确报错（不写入任何东西）
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('没有收到有效的目录路径')
-    expect(host.askLog.at(-1).questions.map((q) => q.id)).toEqual(['ml-vault'])
-    // 会话有 cwd 时引导问题带一个「当前工作区」选项
-    const withCwd = await command.handler({ agent: { session: { header: { cwd: workspace } } }, rawInput: 'todo', signal: new AbortController().signal })
-    expect(withCwd.kind).toBe('error')
-    expect(host.askLog.at(-1).questions[0].options).toEqual([{ label: workspace, description: '当前会话的工作区' }])
+    for (const rawInput of ['todo', 'todo list', 'view', '随便记一句']) {
+      const result = await command.handler({ agent: { session: { header: {} } }, rawInput, signal: new AbortController().signal })
+      expect(result.kind, rawInput).toBe('error')
+      expect(result.text, rawInput).toContain('/ml init')
+    }
+    expect(host.askLog).toHaveLength(0) // 严格门控：没有触发任何提问
+    // help 仍可用
+    const help = await command.handler({ agent: { session: { header: {} } }, rawInput: 'help', signal: new AbortController().signal })
+    expect(help.kind).toBe('success')
   })
 
   it('vault 指向的目录消失返回环境错误（不崩溃）', async () => {
@@ -940,39 +940,74 @@ describe('/ml todo u 撤销（端到端）', () => {
   })
 })
 
-describe('Vault 初始化与设置分层（端到端）', () => {
+describe('Vault 与 /ml init（端到端）', () => {
   const signal = () => new AbortController().signal
 
-  it('vault 未设置：命令引导 → 创建目录 → 保存 + 复制设置文件 → 继续执行原命令', async () => {
+  it('/ml init：选择目录（引号清理 + 自动创建）→ 保存 + 复制设置文件；init 前其他命令被拦', async () => {
     const vaultWs = await mkdtemp(join(tmpdir(), 'dsh-ml-vault-'))
     try {
-      // 答案带包裹引号 + 指向不存在的子目录：验证清理与自动创建
       const target = join(vaultWs, 'sub', 'MLeak')
       const vhost = createFakeHost({ 'ml-vault': { custom: `"${target}"` } })
       apply(vhost.ctx)
       const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
-      const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 初始化记录', signal: signal() })
+      // init 之前：其他命令被严格门控拦下（提示 /ml init），不触发提问
+      const blocked = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 记一句', signal: signal() })
+      expect(blocked.kind).toBe('error')
+      expect(blocked.text).toContain('/ml init')
+      expect(vhost.askLog).toHaveLength(0)
+      // /ml init：答案带包裹引号 + 指向不存在的子目录 → 清理 + 自动创建
+      const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'init', signal: signal() })
       expect(result.kind).toBe('success')
-      expect(result.text).toContain('已设置 Vault →')
-      expect(result.text).toContain('已记录 →')
-      // 引导提问形态：无会话 cwd → 无选项，只有路径输入
+      expect(result.text).toContain(`Vault 已设置 → ${target}`)
+      // 提问形态：无会话 cwd → 无选项，只有路径输入
       expect(vhost.askLog[0].questions.map((q) => q.id)).toEqual(['ml-vault'])
       expect(vhost.askLog[0].questions[0].options).toEqual([])
-      // 设置已持久化（引号被清理）→ 第二次命令不再引导
-      const again = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'todo list all', signal: signal() })
+      // init 之后：原命令可正常执行（写入 vault，而非会话目录）
+      const again = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 初始化记录', signal: signal() })
       expect(again.kind).toBe('success')
+      expect(again.text).toContain('已记录 →')
       expect(vhost.askLog).toHaveLength(1)
       // 初始化复制：vault 里有 .memoryleak.yaml，且不包含 vault 键本身
-      const vaultFile = join(target, '.memoryleak.yaml')
-      const copied = await readFile(vaultFile, 'utf8')
+      const copied = await readFile(join(target, '.memoryleak.yaml'), 'utf8')
       expect(copied).toContain('extensions:')
       expect(copied).not.toContain('vault:')
-      // 记录写进了 vault（而非会话目录）
       const daily = `${dailyFileName(new Date())}`
       expect(await readFile(join(target, daily), 'utf8')).toContain('初始化记录')
     } finally {
       await rm(vaultWs, { recursive: true, force: true })
     }
+  })
+
+  it('/ml init 也可换目录：已设置时提问带「当前」，新答案替换旧值', async () => {
+    const vaultWs = await mkdtemp(join(tmpdir(), 'dsh-ml-vault-swap-'))
+    try {
+      const first = join(vaultWs, 'one')
+      const second = join(vaultWs, 'two')
+      const vhost = createFakeHost({ 'ml-vault': { custom: second } })
+      apply(vhost.ctx)
+      await vhost.settings.update('memoryleak', { vault: first })
+      await mkdir(first, { recursive: true })
+      const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
+      const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'init', signal: signal() })
+      expect(result.kind).toBe('success')
+      // 提问带「当前」提示（换目录语义），成功输出是新值
+      expect(vhost.askLog[0].questions[0].question).toContain(`当前：${first}`)
+      expect(result.text).toContain(`Vault 已设置 → ${second}`)
+      // 新命令写进新目录
+      await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 换址记录', signal: signal() })
+      expect(await readFile(join(second, `${dailyFileName(new Date())}`), 'utf8')).toContain('换址记录')
+    } finally {
+      await rm(vaultWs, { recursive: true, force: true })
+    }
+  })
+
+  it('/ml init 带参数是用法错误', async () => {
+    const vhost = createFakeHost({})
+    apply(vhost.ctx)
+    const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
+    const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'init E:/x', signal: signal() })
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('不带参数')
   })
 
   it('vault 内设置覆盖全局，缺键回退全局/默认', async () => {
@@ -998,7 +1033,7 @@ describe('Vault 初始化与设置分层（端到端）', () => {
     }
   })
 
-  it('引导答案指向已存在的文件 → 明确错误，不写入设置', async () => {
+  it('/ml init 答案指向已存在的文件 → 明确错误，不写入设置', async () => {
     const vaultWs = await mkdtemp(join(tmpdir(), 'dsh-ml-vault3-'))
     try {
       const filePath = join(vaultWs, 'afile.txt')
@@ -1006,25 +1041,27 @@ describe('Vault 初始化与设置分层（端到端）', () => {
       const vhost = createFakeHost({ 'ml-vault': { custom: filePath } })
       apply(vhost.ctx)
       const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
-      const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'x', signal: signal() })
+      const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'init', signal: signal() })
       expect(result.kind).toBe('error')
       expect(result.text).toContain('不是目录')
-      // 设置未被保存（仍是默认空 vault），引导问题只问了一次
+      // 设置未被保存（仍是默认空 vault），提问只发生一次
       expect(vhost.askLog).toHaveLength(1)
     } finally {
       await rm(vaultWs, { recursive: true, force: true })
     }
   })
 
-  it('vault 未设置且无交互界面 → 明确错误指向设置页', async () => {
+  it('无交互界面时：普通命令仍报 /ml init 提示；/ml init 明确报错指向设置页', async () => {
     const vhost = createFakeHost({})
     vhost.ctx.get = () => undefined
     apply(vhost.ctx)
     const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
-    const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'todo', signal: signal() })
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('Vault 目录')
-    expect(result.text).toContain('设置')
+    const blocked = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'todo', signal: signal() })
+    expect(blocked.kind).toBe('error')
+    expect(blocked.text).toContain('/ml init')
+    const init = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'init', signal: signal() })
+    expect(init.kind).toBe('error')
+    expect(init.text).toContain('GUI 设置')
   })
 
   it('GET /path/complete：列出前缀匹配的子目录（只目录、读失败静默空）', async () => {
