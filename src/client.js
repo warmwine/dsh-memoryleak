@@ -99,7 +99,7 @@ window.__ModuleLoader__.load({
       };
     }
 
-    function NotesSettingsPage() {
+    function NotesSettingsPage({ pickDirectory }) {
       const [draft, setDraft] = React.useState(null);
       const [revision, setRevision] = React.useState(null);
       const [formats, setFormats] = React.useState([]);
@@ -164,17 +164,19 @@ window.__ModuleLoader__.load({
       };
 
       const [picking, setPicking] = React.useState(false);
+      // 官方目录选择（ctx.workspaces.pickDirectory，跨平台由宿主组合的
+      // directory-picker 后端处理）；取消返回 null 静默，失败提示。
       const browse = () => {
         setPicking(true);
-        apiPost("/pick-directory", {})
-          .then((body) => {
-            if (typeof body.path === "string" && body.path !== "") {
-              update({ vault: body.path });
+        Promise.resolve()
+          .then(() => pickDirectory())
+          .then((path) => {
+            if (typeof path === "string" && path !== "") {
+              update({ vault: path });
               setMessage(null);
             }
-            // path:null = 用户取消或平台不支持 —— 静默
           })
-          .catch((e) => setMessage({ kind: "error", text: "打开目录选择器失败：" + e.message }))
+          .catch((e) => setMessage({ kind: "error", text: "打开目录选择器失败：" + (e instanceof Error ? e.message : String(e)) }))
           .then(() => setPicking(false));
       };
 
@@ -198,16 +200,18 @@ window.__ModuleLoader__.load({
 
       return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
         React.createElement("h3", { style: { margin: "4px 0 8px" } }, "MemoryLeak"),
-        row("Vault 目录",
-          React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flex: "0 0 auto" } },
-            React.createElement("button", { onClick: browse, disabled: picking || busy }, picking ? "打开中…" : "浏览…"),
+        React.createElement("div", { key: "Vault 目录", style: { padding: "8px 0", borderBottom: "1px solid rgba(128,128,128,.15)" } },
+          React.createElement("span", null, "Vault 目录"),
+          React.createElement("p", { style: hintStyle },
+            "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框。留空时执行任意 /ml 命令会引导选择。保存后自动复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
+          React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 6 } },
+            React.createElement("button", { onClick: browse, disabled: picking || busy, style: { flex: "0 0 auto" } }, picking ? "打开中…" : "浏览…"),
             React.createElement("input", {
               value: draft.vault,
               onChange: (event) => update({ vault: event.target.value }),
               placeholder: "E:\\notes\\MLeak（留空 = 未初始化）",
-              style: { minWidth: 200, width: 260, fontVariantNumeric: "tabular-nums" },
-            })),
-          "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框。留空时执行任意 /ml 命令会引导选择。保存后自动把当前设置复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
+              style: { flex: "1 1 auto", minWidth: 0, width: "auto", fontVariantNumeric: "tabular-nums" },
+            }))),
         row("默认过滤",
           React.createElement("select", {
             value: draft.defaultStatus,
@@ -396,12 +400,19 @@ window.__ModuleLoader__.load({
       return {
         async options(_session, signal) {
           let body = {};
+          let unreachable = false;
           try {
             const res = await fetch(`${API}/files?limit=50`, signal !== null && signal !== undefined ? { signal } : undefined)
             body = await res.json().catch(() => ({}))
-            if (!res.ok || body.ok === false) return []
+            if (!res.ok || body.ok === false) unreachable = true;
           } catch {
-            return []
+            unreachable = true;
+          }
+          // Vault 未设置 / 服务不可达：不是错误——给一个「初始化」条目，
+          // 选中即执行 /ml view 触发宿主的 Vault 引导（任何非 help 命令
+          // 都会引导）。快速打开是便利层，绝不能拦住命令本身。
+          if (unreachable) {
+            return [{ id: "__ml_setup__", label: "初始化 Vault 目录…", detail: "尚未设置存放目录" }];
           }
           const files = Array.isArray(body.files) ? body.files : []
           if (files.length === 0) return []
@@ -414,7 +425,8 @@ window.__ModuleLoader__.load({
         async onSelect(option, session) {
           const sessionId = session !== null && typeof session === "object" ? session.sessionId : undefined
           if (typeof sessionId !== "string" || sessionId === "") throw new Error("无法定位当前会话")
-          const result = await ctx.remote.commands.execute(sessionId, `/ml view ${option.id}`)
+          const line = option.id === "__ml_setup__" ? "/ml view" : `/ml view ${option.id}`
+          const result = await ctx.remote.commands.execute(sessionId, line)
           if (!result.ok) throw new Error(`执行失败：${result.error?.message ?? result.error?.code ?? "未知错误"}`)
         },
       }
@@ -1159,7 +1171,7 @@ window.__ModuleLoader__.load({
       return base.replace(/[\\/]+$/, "") + sepChar + name + sepChar;
     }
 
-    function MlVaultComposer({ matched }) {
+    function MlVaultComposer({ matched, pickDirectory }) {
       const wait = matched;
       const questions = wait !== null && typeof wait === "object" && wait.payload !== null && typeof wait.payload === "object" && Array.isArray(wait.payload.questions)
         ? wait.payload.questions
@@ -1262,10 +1274,22 @@ window.__ModuleLoader__.load({
         if (busy) return;
         const path = value.trim();
         if (path === "") {
-          setError("先输入（或用 Tab 补全）一个目录路径");
+          setError("先输入（或用 Tab 补全 / 点「浏览…」）一个目录路径");
           return;
         }
         answerCustom(path);
+      };
+      // 官方目录选择：选中即填入输入框（不直接提交 —— 用户还能改）；
+      // 取消静默，失败显示在页脚。
+      const browse = () => {
+        if (busy || typeof pickDirectory !== "function") return;
+        setError(null);
+        Promise.resolve()
+          .then(() => pickDirectory())
+          .then((path) => {
+            if (typeof path === "string" && path !== "") setValue(path);
+          })
+          .catch((e) => setError("打开目录选择器失败：" + (e instanceof Error ? e.message : String(e))));
       };
       const onInputKey = (ev) => {
         if (ev.isComposing === true) return;
@@ -1349,13 +1373,20 @@ window.__ModuleLoader__.load({
                     React.createElement("span", null, option.label),
                     typeof option.description === "string" ? React.createElement("span", { style: quickDescStyle }, option.description) : null)))
               : null,
-            React.createElement("input", {
-              type: "text", style: inputStyle, className: "ml-vault-input",
-              value, autoFocus: true, spellCheck: false, disabled: busy,
-              placeholder: "E:\\notes\\MLeak（Tab 补全，~ 开头为用户目录）",
-              onChange: (event) => setValue(event.target.value),
-              onKeyDown: onInputKey,
-            }),
+            React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+              React.createElement("input", {
+                type: "text", style: { ...inputStyle, flex: "1 1 auto", minWidth: 0 }, className: "ml-vault-input",
+                value, autoFocus: true, spellCheck: false, disabled: busy,
+                placeholder: "E:\\notes\\MLeak（Tab 补全，~ 开头为用户目录）",
+                onChange: (event) => setValue(event.target.value),
+                onKeyDown: onInputKey,
+              }),
+              typeof pickDirectory === "function"
+                ? React.createElement("button", {
+                    type: "button", style: primaryBtnStyle, className: "ml-vault-browse",
+                    disabled: busy, onClick: browse,
+                  }, "浏览…")
+                : null),
             base !== "" && list.length > 0
               ? React.createElement("div", { style: baseHintStyle }, "在 " + base + " 下：")
               : null,
@@ -1385,13 +1416,19 @@ window.__ModuleLoader__.load({
     /* ---------------- 插件入口 ---------------- */
     // sessions/conversation 是槽位 inject 工厂里解析会话输入 shell 的硬依赖，
     // 必须声明，否则运行时报 cannot get property "sessions" without inject。
-    const inject = ["slots", "commandUi", "remote", "remote.commands", "sessions", "conversation"];
+    // workspaces 是官方目录选择（ctx.workspaces.pickDirectory，跨平台由
+    // 宿主组合的 directory-picker 后端处理 —— 我们自己不造平台脚本）。
+    const inject = ["slots", "commandUi", "remote", "remote.commands", "sessions", "conversation", "workspaces"];
 
     function apply(ctx) {
+      // 官方目录选择闭包：设置页「浏览…」与 Vault 引导卡共用。取消 = null，
+      // 失败抛错（调用方各自展示）；不捕获平台细节。
+      const pickDirectory = () => ctx.workspaces.pickDirectory();
+
       // 设置窗口：GUI 设置面板中的一个「MemoryLeak」分区（与字体设置页同款槽位）。
       ctx.slots.inject("settings.section", () => ctx.slots.register(
         { name: "settings.section", id: "memoryleak", order: 96, label: "MemoryLeak" },
-        () => React.createElement(NotesSettingsPage)
+        () => React.createElement(NotesSettingsPage, { pickDirectory })
       ));
 
       // /ml 命令卡片：默认展开的会话式视图（替换需点击展开的通用折叠卡）。
@@ -1419,10 +1456,10 @@ window.__ModuleLoader__.load({
       ));
 
       // Vault 引导（vault 未设置时的 ml-vault 单问题）：接管渲染目录选择卡
-      //（路径输入 + Tab 补全候选 + 当前工作区快捷选项），选完即答。
+      //（路径输入 + Tab 补全候选 + 官方目录选择按钮 + 当前工作区快捷项）。
       ctx.slots.inject("conversation.composer", () => ctx.slots.register(
         { name: "conversation.composer", priority: -100, select: mlSelectVaultQuestion },
-        MlVaultComposer
+        (props) => React.createElement(MlVaultComposer, { ...props, pickDirectory })
       ));
 
       // 命令菜单选中 /ml → 快速打开弹窗（VSCode Ctrl+P 风格查看文件）。

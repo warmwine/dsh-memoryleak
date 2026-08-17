@@ -183,12 +183,11 @@ describe('宿主插件装配（apply）', () => {
     }
   })
 
-  it('注册 5 条 API 路由（GET/POST /settings 合一）与 1 条 /ml 命令', () => {
+  it('注册 4 条 API 路由（GET/POST /settings 合一）与 1 条 /ml 命令', () => {
     expect(host.routes.map((route) => `${route.kind} ${route.path}`).sort()).toEqual([
       'exact /api/memoryleak/files',
       'exact /api/memoryleak/formats',
       'exact /api/memoryleak/path/complete',
-      'exact /api/memoryleak/pick-directory',
       'exact /api/memoryleak/settings',
       'exact /api/memoryleak/settings/reset',
     ])
@@ -355,7 +354,7 @@ describe('宿主插件装配（apply）', () => {
     for (const dispose of host.effects) dispose()
     expect(host.routes).toHaveLength(0)
     expect(host.commands).toHaveLength(0)
-    expect(routesBefore).toBe(6)
+    expect(routesBefore).toBe(5)
     expect(commandsBefore).toBe(1)
   })
 })
@@ -1067,30 +1066,9 @@ describe('Vault 初始化与设置分层（端到端）', () => {
     }
   })
 
-  it('POST /pick-directory：原生选择器结果透传；取消/不支持为 null', async () => {
-    // 直接构造路由（pickDirectory 注入桩，不真弹系统对话框）
-    const { makeMemoryleakRoutes } = await import('../src/routes.js')
-    const fakeCtx = {
-      settings: { describe: () => [] },
-    }
-    const fakeScope = { get: () => ({}) }
-    const callWith = async (stub) => {
-      const routes = makeMemoryleakRoutes({ ctx: fakeCtx, scope: fakeScope, registry: { descriptors: [] }, pickDirectory: stub })
-      const route = routes.find((entry) => entry.path === '/api/memoryleak/pick-directory')
-      return invokeRoute(route, 'POST', {})
-    }
-    const picked = await callWith(async () => 'E:\\picked\\dir')
-    expect(picked.status).toBe(200)
-    expect(picked.body).toEqual({ ok: true, path: 'E:\\picked\\dir' })
-    const cancelled = await callWith(async () => null)
-    expect(cancelled.body).toEqual({ ok: true, path: null })
-    const failed = await callWith(async () => { throw new Error('boom') })
-    expect(failed.status).toBe(500)
-    expect(failed.body.ok).toBe(false)
-    // 方法错误
-    const routes = makeMemoryleakRoutes({ ctx: fakeCtx, scope: fakeScope, registry: { descriptors: [] }, pickDirectory: async () => null })
-    const route = routes.find((entry) => entry.path === '/api/memoryleak/pick-directory')
-    const wrong = await invokeRoute(route, 'GET')
-    expect(wrong.status).toBe(405)
+  it('POST /pick-directory 路由已移除（目录选择改走官方 workspaces 服务）', async () => {
+    const vhost = createFakeHost({})
+    apply(vhost.ctx)
+    expect(vhost.routes.some((entry) => entry.path === '/api/memoryleak/pick-directory')).toBe(false)
   })
 })

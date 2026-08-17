@@ -13,8 +13,9 @@
  *   GET  /api/memoryleak/path/complete?prefix=
  *                                       → { ok, base, entries }（Vault 选择卡
  *                                         的目录补全；读失败静默空列表）
- *   POST /api/memoryleak/pick-directory  → { ok, path: string | null }（系统
- *                                         目录选择对话框；取消/不支持为 null）
+ *
+ * （系统目录选择对话框不在此处：浏览器半直接调官方 workspaces 服务的
+ *   pickDirectory —— dsh-host-directory-picker-auto 负责跨平台。）
  *
  * 失败一律显式返回 { ok: false, error }，绝不静默。
  *
@@ -24,7 +25,6 @@ import { MEMORYLEAK_SETTINGS_NAMESPACE, MEMORYLEAK_SETTINGS_DEFAULTS, resolveMem
 import { listWorkspaceFiles } from './journal.js'
 import { dailyFileName, weeklyFileName } from './core/journal.js'
 import { ensureVaultSettingsFile, resolveEffectiveSettings, completeVaultPath } from './vault.js'
-import { execFile } from 'node:child_process'
 
 /** 浏览器侧 API 前缀。 */
 export const MEMORYLEAK_API_PREFIX = '/api/memoryleak'
@@ -81,62 +81,14 @@ function revisionOf(ctx) {
 }
 
 /**
- * Windows 原生目录选择对话框（PowerShell WinForms FolderBrowserDialog，
- * STA 线程 + 隐藏控制台）。返回选中路径的 UTF-8 文本；取消 / 出错 /
- * 非 Windows 返回 null。对话框期间请求挂起（异步等待，不阻塞服务）。
- *
- * 脚本注意（都是踩过的坑）：
- *   - 方法调用用点号（`.Write`）——PowerShell 没有 C# 的 `::Write` 语法，
- *     写错整段脚本静默失败，表现恰是「点了按钮没反应」；
- *   - 先设 `[Console]::OutputEncoding = UTF8` 再输出，否则中文路径按系统
- *     ANSI（GBK）编码，Node 侧按 UTF-8 解码会乱码；
- *   - ShowDialog 挂一个 TopMost 的隐藏 owner，否则对话框可能弹在所有
- *     窗口后面（宿主进程自己没有前台窗口）。
- *
- * @returns {Promise<string | null>}
- */
-function nativePickDirectory() {
-  return new Promise((resolvePromise) => {
-    if (process.platform !== 'win32') {
-      resolvePromise(null)
-      return
-    }
-    const script = [
-      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
-      'Add-Type -AssemblyName System.Windows.Forms',
-      '$d = New-Object System.Windows.Forms.FolderBrowserDialog',
-      "$d.Description = 'MemoryLeak Vault'",
-      '$d.ShowNewFolderButton = $true',
-      '$f = New-Object System.Windows.Forms.Form',
-      '$f.TopMost = $true',
-      'if ($d.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) { $d.SelectedPath }',
-    ].join('; ')
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-STA', '-NonInteractive', '-Command', script],
-      { timeout: 15 * 60 * 1000, windowsHide: true, maxBuffer: 64 * 1024 },
-      (error, stdout) => {
-        if (error) {
-          resolvePromise(null)
-          return
-        }
-        const path = String(stdout).trim()
-        resolvePromise(path === '' ? null : path)
-      },
-    )
-  })
-}
-
-/**
  * 构造全部路由（由宿主半注册，随插件停用回收）。
  *
  * @param {object} deps
  * @param {object} deps.ctx 宿主上下文（settings 服务，用于 revision 与整段重置）
  * @param {{ get(): unknown, update(patch: object, expectedRevision?: number): Promise<void> }} deps.scope
  * @param {object} deps.registry TodoFormatRegistry
- * @param {() => Promise<string | null>} [deps.pickDirectory] 原生目录选择（测试注入用）
  */
-export function makeMemoryleakRoutes({ ctx, scope, registry, pickDirectory = nativePickDirectory }) {
+export function makeMemoryleakRoutes({ ctx, scope, registry }) {
   /** GET /settings：读当前段 + 修订号 + 默认值。 */
   function handleGetSettings(req, res) {
     if (!requireMethod(req, res, 'GET')) return
@@ -282,22 +234,7 @@ export function makeMemoryleakRoutes({ ctx, scope, registry, pickDirectory = nat
     },
   }
 
-  /** POST /pick-directory：系统目录选择对话框；取消/不支持 → path: null。 */
-  const postPickDirectory = {
-    kind: 'exact',
-    path: `${MEMORYLEAK_API_PREFIX}/pick-directory`,
-    handler: (req, res) => {
-      if (!requireMethod(req, res, 'POST')) return
-      Promise.resolve()
-        .then(() => pickDirectory())
-        .then((path) => {
-          json(res, 200, { ok: true, path: typeof path === 'string' && path !== '' ? path : null })
-        })
-        .catch((error) => json(res, 500, { ok: false, error: errorMessage(error) }))
-    },
-  }
-
-  return [settingsRoute, postReset, getFormats, getFiles, getPathComplete, postPickDirectory]
+  return [settingsRoute, postReset, getFormats, getFiles, getPathComplete]
 }
 
 function errorMessage(error) {
