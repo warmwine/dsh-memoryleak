@@ -777,19 +777,28 @@ describe('/ml todo d 与唤醒转写（端到端）', () => {
     expect(result.text).toContain('[唤醒·中等]')
   })
 
-  it('d <n>：按序号切换完成态（落盘 + 回显）', async () => {
+  it('d <n>：按序号切换完成态（落盘 + 写入完成日期 + 回显）', async () => {
     const result = await run('todo d 1')
     expect(result.kind).toBe('success')
-    expect(result.text).toContain('#1 → 已完成 ☑')
-    const daily = `${formatDate(new Date())}.md`
+    const today = formatDate(new Date())
+    expect(result.text).toContain(`#1 → 已完成 ☑（完成于 ${today}）`)
+    const daily = `${today}.md`
     const content = await readFile(join(dWs, daily), 'utf8')
-    expect(content).toContain('- [x] (ml:active medium) 早已唤醒')
+    expect(content).toContain(`- [x] (ml:active medium done:${today}) 早已唤醒`)
+    // list 徽章显示 ✓完成日
+    const listed = await run('todo list done')
+    expect(listed.kind).toBe('success')
+    expect(listed.text).toContain(`[唤醒·中等 ✓${today}]`)
   })
 
-  it('d done 别名 + 再次切换回未完成', async () => {
+  it('d done 别名 + 再次切换回未完成（完成日期清除）', async () => {
     const result = await run('todo done 1')
     expect(result.kind).toBe('success')
     expect(result.text).toContain('#1 → 未完成 ☐')
+    const daily = `${formatDate(new Date())}.md`
+    const content = await readFile(join(dWs, daily), 'utf8')
+    expect(content).toContain('- [ ] (ml:active medium) 早已唤醒')
+    expect(content).not.toContain('done:')
   })
 
   it('序号超出范围报错', async () => {
@@ -846,16 +855,19 @@ describe('/ml todo u 撤销（端到端）', () => {
     expect(result.text).toContain('没有可撤销的操作')
   })
 
-  it('d 1 → u 完整往返：文件回到未完成，回显已撤销', async () => {
+  it('d 1 → u 完整往返：文件回到未完成（完成日期清除），回显已撤销', async () => {
     const toggled = await run('todo list').then(() => run('todo d 1'))
     expect(toggled.kind).toBe('success')
-    expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain('- [x] (ml:deadline 2026-09-01 urgent) 完成设计稿')
+    const today = formatDate(new Date())
+    expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain(`- [x] (ml:deadline 2026-09-01 urgent done:${today}) 完成设计稿`)
 
     const undone = await run('todo u')
     expect(undone.kind).toBe('success')
     expect(undone.text).toContain('已撤销 #1 → 未完成 ☐')
     expect(undone.text).toContain('完成设计稿')
-    expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain('- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿')
+    const after = (await readFile(join(uWs, daily), 'utf8')).trim()
+    expect(after).toContain('- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿')
+    expect(after).not.toContain('done:')
   })
 
   it('栈空再 u → 报错', async () => {
@@ -877,14 +889,15 @@ describe('/ml todo u 撤销（端到端）', () => {
   it('连续 d 多次可连续 u（LIFO）', async () => {
     // 重置文件为未完成
     const content = await readFile(join(uWs, daily), 'utf8')
-    await writeFile(join(uWs, daily), content.replace('- [x] (ml:deadline', '- [ ] (ml:deadline'))
+    await writeFile(join(uWs, daily), content.replace(/- \[x\] \(ml:deadline/, '- [ ] (ml:deadline').replace(/ done:\d{4}-\d{2}-\d{2}/, ''))
     await run('todo list')
     await run('todo d 1') // → done
     await run('todo d 1') // → open
     const undone = await run('todo u') // → done（撤销第二次 d）
     expect(undone.kind).toBe('success')
     expect(undone.text).toContain('已撤销 #1 → 已完成 ☑')
-    expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain('- [x] (ml:deadline 2026-09-01 urgent) 改过的内容')
+    const today = formatDate(new Date())
+    expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain(`- [x] (ml:deadline 2026-09-01 urgent done:${today}) 改过的内容`)
   })
 
   it('u 带参数是用法错误', async () => {

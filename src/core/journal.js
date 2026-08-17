@@ -15,6 +15,7 @@
  * @module dsh-memoryleak/core/journal
  */
 import { invariant, TodoError } from './errors.js'
+import { toggleStructuredTodoLine } from './formats/memoryleak-todo.js'
 
 /** 两位补零。 */
 function pad2(value) {
@@ -219,17 +220,25 @@ const CHECKBOX_LINE = /^([ \t]*(?:[-*+])[ \t]+)\[([ xX])](\s.*)$/
 
 /**
  * 切换指定行待办的完成态（纯函数；保留原文其余部分与换行形态）。
+ * 结构化行（memoryleak-todo 格式）走专用切换：完成时写入 done:<today>，
+ * 取消完成时清除；普通复选框行只翻转 [ ]/[x]。
  *
  * @param {string} content 文件内容
  * @param {number} lineNumber 1 起始行号
+ * @param {string} today yyyy-mm-dd（结构化行完成时写入的日期）
  * @returns {{ content: string, done: boolean }} 新内容与切换后的完成态
  */
-export function toggleTodoLine(content, lineNumber) {
+export function toggleTodoLine(content, lineNumber, today) {
   invariant(typeof content === 'string', 'toggleTodoLine 需要 string 内容')
   invariant(Number.isInteger(lineNumber) && lineNumber >= 1, `toggleTodoLine 需要正行号（收到 ${String(lineNumber)}）`)
   const lines = content.split('\n')
   const index = lineNumber - 1
   if (index >= lines.length) throw new TodoError(`第 ${lineNumber} 行超出文件范围`)
+  const structured = toggleStructuredTodoLine(lines[index], today)
+  if (structured !== null) {
+    lines[index] = structured.line
+    return { content: lines.join('\n'), done: structured.done }
+  }
   const match = CHECKBOX_LINE.exec(lines[index])
   if (match === null) throw new TodoError(`第 ${lineNumber} 行不是待办复选框行：${lines[index].slice(0, 40)}`)
   const nextDone = match[2] === ' '

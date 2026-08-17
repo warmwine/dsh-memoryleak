@@ -217,14 +217,15 @@ export async function wakeupSleepingTodos(cwd, items, today) {
 }
 
 /**
- * 切换工作区内某文件某行的待办完成态。
+ * 切换工作区内某文件某行的待办完成态（结构化行完成时写入 done:<today>）。
  *
  * @param {string} cwd
  * @param {string} file 工作区相对路径
  * @param {number} line 1 起始行号
+ * @param {string} today yyyy-mm-dd（完成日期戳）
  * @returns {Promise<{ done: boolean, raw: string }>} 切换后的完成态与该行新内容（撤销校验用）
  */
-export async function toggleTodoAt(cwd, file, line) {
+export async function toggleTodoAt(cwd, file, line, today) {
   const path = join(cwd, file)
   let content
   try {
@@ -232,7 +233,7 @@ export async function toggleTodoAt(cwd, file, line) {
   } catch (error) {
     throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  const result = toggleTodoLine(content, line)
+  const result = toggleTodoLine(content, line, today)
   const raw = result.content.split('\n')[line - 1]
   try {
     await writeFile(path, result.content, 'utf8')
@@ -243,17 +244,18 @@ export async function toggleTodoAt(cwd, file, line) {
 }
 
 /**
- * 撤销一次切换：把指定行翻回 d 之前的状态。以 d 完成时捕获的行内容
- * （postRaw）做严格校验 —— 行在 d 之后被外部修改则拒绝撤销。
+ * 撤销一次切换：把指定行翻回 d 之前的状态（完成日期一并清除）。以 d 完成时
+ * 捕获的行内容（postRaw）做严格校验 —— 行在 d 之后被外部修改则拒绝撤销。
  *
  * @param {string} cwd
  * @param {string} file
  * @param {number} line
  * @param {string} postRaw d 之后该行的内容（toggleTodoAt 返回的 raw）
+ * @param {string} today yyyy-mm-dd（若翻回完成态所需的时间戳；翻回未完成则忽略）
  * @returns {Promise<{ done: boolean }>} 撤销后的完成态
  */
-export async function undoTodoAt(cwd, file, line, postRaw) {
-  const flipped = toggleTodoLine(postRaw, 1) // 单行内容翻回另一态
+export async function undoTodoAt(cwd, file, line, postRaw, today) {
+  const flipped = toggleTodoLine(postRaw, 1, today) // 单行内容翻回另一态
   const path = join(cwd, file)
   let content
   try {

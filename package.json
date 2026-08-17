@@ -2,6 +2,7 @@
     "name": "dsh-memoryleak",
     "version": "0.10.1",
     "description": "Notes and todos as plain Markdown in your DSH workspace: /ml jots into today's journal, todos come in deadline/sleep-until/anytime flavors with auto-wakeup, /ml view fuzzy-opens any file — zero-token slash commands, notes stay plain files.",
+    "author": "温酒 <zjwjxdm@gmail.com>",
     "type": "module",
     "main": "src/index.js",
     "exports": {

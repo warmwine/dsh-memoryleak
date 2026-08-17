@@ -35,12 +35,14 @@ const WOKE = '☀'
 const TYPE_LABEL = Object.freeze({ deadline: '截止', sleep: '睡到', anytime: '随时', active: '唤醒' })
 const PRIO_LABEL = Object.freeze({ urgent: '紧急', medium: '中等', low: '低' })
 
-function metaBadge(meta) {
+function metaBadge(meta, done = false) {
   if (meta === null || meta === undefined) return ''
   const type = TYPE_LABEL[meta.type] ?? meta.type
   const prio = PRIO_LABEL[meta.prio] ?? meta.prio
   const date = typeof meta.date === 'string' && meta.date !== '' ? ` ${meta.date}` : ''
-  return ` [${type}${date}·${prio}]`
+  // 完成日期（/ml todo d 写入）：仅已完成行显示
+  const doneAt = done === true && typeof meta.doneAt === 'string' && meta.doneAt !== '' ? ` ✓${meta.doneAt}` : ''
+  return ` [${type}${date}·${prio}${doneAt}]`
 }
 
 /** 结果是否不完整：查询截断或扫描截断都算。 */
@@ -86,7 +88,7 @@ export function renderTodoText(report, query = createTodoQuery()) {
       displayId += 1
       const glyph = item.done ? GLYPH_DONE : GLYPH_OPEN
       const idColumn = `${String(displayId).padStart(3)}.`
-      lines.push(`${idColumn} ${glyph}${metaBadge(item.meta)} ${item.text}`)
+      lines.push(`${idColumn} ${glyph}${metaBadge(item.meta, item.done)} ${item.text}`)
     }
   }
   if (report.wokenCount > 0) lines.push(RULE, `${WOKE} 已唤醒 ${report.wokenCount} 条 sleep 待办（转写为 active）`)

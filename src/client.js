@@ -276,6 +276,50 @@ window.__ModuleLoader__.load({
        （/ml 记录与 /ml todo 两个家族共用此视图。）
        已知边界：blank 会话（从未发过 LLM 消息）不挂载时间线，命令卡片
        无论自定义还是通用都不显示 —— DSH 上游设计，见 README「已知行为」。 */
+    /* todo list 的结构化渲染：把条目行拆成 前缀（序号+状态+徽章）与 正文
+       两段。正文自然换行并与自身左对齐 —— 悬挂缩进的 CSS 等价实现（宿主
+       文本无法预知客户端换行宽度，纯空格缩进在 pre-wrap 下不可对齐）。
+       宿主输出的纯文本格式保持不变，TUI/纯文本环境仍是原排版。 */
+    const TODO_ITEM_LINE = /^\s*(\d+)\.\s*([☐☑])(?:\s+(\[[^\]]+\]))?\s*(.*)$/;
+
+    function MlTodoListBody({ text, cardStyle }) {
+      const lines = String(text).split("\n");
+      return React.createElement("div", {
+        style: { ...cardStyle, display: "flex", flexDirection: "column", lineHeight: 1.7 },
+      }, lines.map((line, index) => {
+        const match = TODO_ITEM_LINE.exec(line);
+        if (match === null) {
+          // 摘要 / 分隔线 / 分组头 / 警告等：原样保留（pre-wrap 保空格）
+          return React.createElement("div", {
+            key: index,
+            style: { whiteSpace: "pre-wrap", overflowWrap: "break-word" },
+          }, line === "" ? " " : line);
+        }
+        const indexText = match[1];
+        const glyph = match[2];
+        const badge = match[3];
+        const content = match[4];
+        const done = glyph === "☑";
+        return React.createElement("div", {
+          key: index,
+          style: { display: "flex", alignItems: "flex-start", gap: "8px" },
+        },
+          React.createElement("span", {
+            style: { flex: "0 0 auto", whiteSpace: "pre", color: "var(--dsw-alias-label-tertiary)" },
+          }, `${indexText}. `.padStart(4) + glyph + (badge === undefined ? "" : ` ${badge}`) + " "),
+          React.createElement("span", {
+            style: {
+              flex: "1 1 auto",
+              minWidth: 0,
+              whiteSpace: "pre-wrap",
+              overflowWrap: "break-word",
+              color: done ? "var(--dsw-alias-label-tertiary)" : "var(--dsw-alias-label-primary)",
+              textDecoration: done ? "line-through" : "none",
+            },
+          }, content === "" ? " " : content));
+      }));
+    }
+
     function MlCommandView({ node }) {
       const outcome = node !== null && typeof node === "object" && node.outcome !== undefined ? node.outcome : null;
       const header = "/ml" + (typeof node?.args === "string" && node.args !== "" ? node.args : "");
@@ -290,20 +334,23 @@ window.__ModuleLoader__.load({
       }
       const text = typeof outcome.text === "string" ? outcome.text : "";
       const isError = outcome.kind === "error";
+      const cardStyle = {
+        border: "1px solid var(--dsw-alias-border-l1)",
+        background: "var(--dsw-alias-markdown-code-block)",
+        color: isError ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-primary)",
+        font: "var(--dsw-font-markdown-code-block-small)",
+        whiteSpace: "pre-wrap",
+        borderRadius: 12,
+        padding: "12px 16px",
+        margin: 0,
+      };
+      // todo list 输出（摘要行固定以「待办 」开头）走结构化渲染，其余保持 pre
+      const body = !isError && text.startsWith("待办 ")
+        ? React.createElement(MlTodoListBody, { text, cardStyle })
+        : React.createElement("pre", { style: cardStyle }, text === "" ? "（无输出）" : text);
       return React.createElement("div", null,
         React.createElement("div", { style: captionStyle }, header),
-        React.createElement("pre", {
-          style: {
-            border: "1px solid var(--dsw-alias-border-l1)",
-            background: "var(--dsw-alias-markdown-code-block)",
-            color: isError ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-primary)",
-            font: "var(--dsw-font-markdown-code-block-small)",
-            whiteSpace: "pre-wrap",
-            borderRadius: 12,
-            padding: "12px 16px",
-            margin: 0,
-          },
-        }, text === "" ? "（无输出）" : text));
+        body);
     }
 
     /* ---------------- /ml 快速打开（popupSelect 壳）----------------

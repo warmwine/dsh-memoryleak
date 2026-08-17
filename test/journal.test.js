@@ -190,24 +190,48 @@ describe('insertTodoLine · ## Todo 模块', () => {
 describe('toggleTodoLine / replaceLine / activateSleepLine', () => {
   const SLEEP = '- [ ] (ml:sleep 2026-08-01 low) 学源码'
   const content = J(['# 日志', '', '## Todo', '', '- [ ] alpha', SLEEP, '- [x] beta'])
+  const TODAY = '2026-08-16'
 
-  it('toggle：未完成 → 已完成（保留缩进与正文）', () => {
-    const result = toggleTodoLine(content, 5)
+  it('toggle：普通行未完成 → 已完成（保留缩进与正文，无 done 戳）', () => {
+    const result = toggleTodoLine(content, 5, TODAY)
     expect(result.done).toBe(true)
     expect(result.content).toContain('- [x] alpha')
     expect(result.content).toContain(SLEEP) // 其余行不动
   })
 
-  it('toggle：已完成 → 未完成', () => {
-    const result = toggleTodoLine(content, 7)
+  it('toggle：普通行已完成 → 未完成', () => {
+    const result = toggleTodoLine(content, 7, TODAY)
     expect(result.done).toBe(false)
     expect(result.content).toContain('- [ ] beta')
   })
 
+  it('toggle：结构化行完成时写入 done:<today>，取消时清除', () => {
+    const done = toggleTodoLine(content, 6, TODAY)
+    expect(done.done).toBe(true)
+    expect(done.content).toContain(`- [x] (ml:sleep 2026-08-01 low done:${TODAY}) 学源码`)
+    // 再切回未完成 → done 戳一并清除
+    const undone = toggleTodoLine(done.content, 6, TODAY)
+    expect(undone.done).toBe(false)
+    expect(undone.content).toContain(SLEEP)
+    expect(undone.content).not.toContain('done:')
+  })
+
+  it('toggle：已有 done 戳的行切回未完成时清除旧戳', () => {
+    const withStamp = J(['## Todo', '', '- [x] (ml:anytime low done:2026-08-01) 旧任务'])
+    const result = toggleTodoLine(withStamp, 3, TODAY)
+    expect(result.done).toBe(false)
+    expect(result.content).toContain('- [ ] (ml:anytime low) 旧任务')
+    expect(result.content).not.toContain('done:')
+  })
+
+  it('toggle：非法 today 抛错（结构化行需要）', () => {
+    expect(() => toggleTodoLine(content, 6, '2026/08/16')).toThrow(/today/)
+  })
+
   it('toggle：非待办行 / 越界行抛错', () => {
-    expect(() => toggleTodoLine(content, 1)).toThrow(/不是待办复选框/)
-    expect(() => toggleTodoLine(content, 99)).toThrow(/超出文件范围/)
-    expect(() => toggleTodoLine(content, 0)).toThrow(/正行号/)
+    expect(() => toggleTodoLine(content, 1, TODAY)).toThrow(/不是待办复选框/)
+    expect(() => toggleTodoLine(content, 99, TODAY)).toThrow(/超出文件范围/)
+    expect(() => toggleTodoLine(content, 0, TODAY)).toThrow(/正行号/)
   })
 
   it('replaceLine：raw 匹配才替换，否则抛错', () => {

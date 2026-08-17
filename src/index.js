@@ -181,9 +181,10 @@ export function apply(ctx) {
       return { kind: 'error', text: `序号超出范围：最近一次列表共 ${list.length} 条（收到 ${n}）。请重新 /ml todo list。` }
     }
     const item = list[n - 1]
+    const today = formatDate(new Date())
     let result
     try {
-      result = await toggleTodoAt(cwd, item.file, item.line)
+      result = await toggleTodoAt(cwd, item.file, item.line, today)
     } catch (error) {
       if (error instanceof TodoError) return { kind: 'error', text: `切换失败：${error.message}` }
       throw error
@@ -191,7 +192,7 @@ export function apply(ctx) {
     const key = agentIdOf(agent)
     if (!undoStackByAgent.has(key)) undoStackByAgent.set(key, [])
     undoStackByAgent.get(key).push({ file: item.file, line: item.line, postRaw: result.raw, n, text: item.text })
-    const state = result.done ? '已完成 ☑' : '未完成 ☐'
+    const state = result.done ? `已完成 ☑（完成于 ${today}）` : '未完成 ☐'
     return { kind: 'success', text: `#${n} → ${state} ${item.text}\n（${item.file}:${item.line}）` }
   }
 
@@ -204,7 +205,7 @@ export function apply(ctx) {
     const entry = stack.pop()
     let result
     try {
-      result = await undoTodoAt(cwd, entry.file, entry.line, entry.postRaw)
+      result = await undoTodoAt(cwd, entry.file, entry.line, entry.postRaw, formatDate(new Date()))
     } catch (error) {
       if (error instanceof TodoError) return { kind: 'error', text: `撤销失败：${error.message}` }
       throw error
