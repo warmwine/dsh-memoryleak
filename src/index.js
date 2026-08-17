@@ -33,7 +33,7 @@ import { renderTodoText } from './core/render.js'
 import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
 import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt, readJournalFile, listWorkspaceFiles, readWorkspaceFile } from './journal.js'
 import { resolveViewTarget } from './core/fuzzy.js'
-import { prepareVaultDir, resolveEffectiveSettings, ensureVaultSettingsFile, VAULT_SETTINGS_FILENAME } from './vault.js'
+import { prepareVaultDir, resolveEffectiveSettings, writeVaultSettingsFile, VAULT_SETTINGS_FILENAME } from './vault.js'
 
 /**
  * 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。
@@ -294,8 +294,9 @@ export function apply(ctx) {
       return { kind: 'error', text: `保存 Vault 设置失败：${error instanceof Error ? error.message : String(error)}` }
     }
     try {
-      // 初始化复制：vault 里已有设置文件则不动（已有内容优先级更高）。
-      await ensureVaultSettingsFile(vaultDir, resolveMemoryleakSettings(scope.get()))
+      // 双写的另一半：与全局同一份同步进 vault（剔除 vault 键；换目录到
+      // 已有旧文件的地方也直接刷新为当前生效值）。
+      await writeVaultSettingsFile(vaultDir, resolveMemoryleakSettings(scope.get()))
     } catch (error) {
       return { kind: 'error', text: `写入 ${VAULT_SETTINGS_FILENAME} 失败：${error instanceof Error ? error.message : String(error)}` }
     }

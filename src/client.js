@@ -133,19 +133,22 @@ window.__ModuleLoader__.load({
           return;
         }
         setBusy(true);
-        const expected = revision === null ? undefined : { expectedRevision: revision };
-        apiPost("/settings", Object.assign({ section }, expected))
+        // 提交是整段替换，覆盖即用户意图 —— 遇 409（revision 过期，比如
+        // 设置页开着时执行过 /ml init）自动拉新 revision 重试一次，而不是
+        // 把用户刚改的表单刷回服务端旧值（那正是「清除无效」的根源）。
+        const submit = (expectedRevision) =>
+          apiPost("/settings", Object.assign({ section }, expectedRevision === null || expectedRevision === undefined ? {} : { expectedRevision }));
+        submit(revision)
+          .catch((error) => {
+            if (error.status !== 409) throw error;
+            return apiGet("/settings").then((fresh) => submit(Number.isInteger(fresh.revision) ? fresh.revision : null));
+          })
           .then((body) => {
             setDraft(draftOf(body.section));
             setRevision(Number.isInteger(body.revision) ? body.revision : revision);
-            setMessage({ kind: "ok", text: "已保存" });
+            setMessage({ kind: "ok", text: "已保存（全局与 Vault 内设置文件已同步）" });
           })
           .catch((error) => {
-            if (error.status === 409) {
-              setMessage({ kind: "error", text: "设置已被其他窗口修改，正在重新加载…" });
-              load();
-              return;
-            }
             setMessage({ kind: "error", text: "保存失败：" + error.message });
           })
           .then(() => setBusy(false));
@@ -1244,11 +1247,11 @@ window.__ModuleLoader__.load({
       });
 
       // 输入变化 → 120ms 去抖拉候选；过期响应按序号丢弃；失败静默为空。
+      // 请求期间保留旧候选（弹层不闪不跳，新结果到了整体替换）。
       const fetchSeq = React.useRef(0);
       React.useEffect(() => {
         const seq = fetchSeq.current + 1;
         fetchSeq.current = seq;
-        setEntries(null);
         const timer = setTimeout(() => {
           fetch(`${API}/path/complete?prefix=${encodeURIComponent(value)}`)
             .then((res) => res.json())
@@ -1332,11 +1335,33 @@ window.__ModuleLoader__.load({
         padding: "6px 12px", color: "var(--dsw-alias-label-primary)",
       };
       const quickDescStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "14px" };
-      const listStyle = {
-        marginTop: 8, borderRadius: 10, padding: 4,
-        maxHeight: 208, overflowY: "auto",
+      // 候选弹层：绝对定位悬浮在整卡上方（对齐 /ml view 候选卡的展开方向），
+      // 输入区高度恒定 —— 候选多少、有无都不再引起卡片与视口的布局抖动。
+      const popupStyle = {
+        position: "absolute",
+        bottom: "calc(100% + 4px)",
+        left: "50%",
+        transform: "translateX(-50%)",
+        width: "100%",
+        maxWidth: "var(--dsh-chat-content-width)",
+        zIndex: 100,
+        border: "1px solid var(--dsw-alias-border-inverted)",
+        background: "var(--dsw-specific-menu)",
+        borderRadius: 12,
+        maxHeight: 280,
+        overflowY: "auto",
+        boxShadow: "var(--dsw-shadow-lv3)",
+        padding: 4,
         "--dsh-scrollbar-thumb": "var(--dsw-alias-scrollbar-bg-l2)",
         "--dsh-scrollbar-thumb-hover": "var(--dsw-alias-scrollbar-hover-l2)",
+      };
+      const popupHintStyle = {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: 12, lineHeight: "16px",
+        padding: "8px 10px 6px",
+        borderBottom: "1px solid var(--dsw-alias-border-l1)",
+        flex: "0 0 auto",
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
       };
       const rowItemStyle = (isActive) => ({
         width: "100%", minHeight: 34, display: "flex", alignItems: "center", gap: 8,
@@ -1346,7 +1371,6 @@ window.__ModuleLoader__.load({
         fontSize: 14, lineHeight: "20px",
       });
       const folderGlyphStyle = { flex: "0 0 auto", color: "var(--dsw-alias-label-primary-bluish)", fontSize: 13 };
-      const baseHintStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "16px", margin: "6px 2px 0" };
       const statusStyle = (isError) => ({
         color: isError ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-tertiary)",
         fontSize: 12, lineHeight: "16px", minWidth: 0,
@@ -1357,7 +1381,21 @@ window.__ModuleLoader__.load({
         borderRadius: 8, fontSize: 13, lineHeight: "20px", color: "var(--dsw-alias-label-primary)",
       };
 
-      return React.createElement("div", { style: ML_FRAME_STYLE, "data-ml-vault-question": wait.key },
+      return React.createElement("div", { style: { ...ML_FRAME_STYLE, position: "relative" }, "data-ml-vault-question": wait.key },
+        entries !== null && list.length > 0
+          ? React.createElement("div", { style: popupStyle, role: "listbox", "aria-label": "候选目录", "data-ml-vault-popup": "1" },
+              React.createElement("div", { style: popupHintStyle },
+                (base === "" ? "候选目录" : "在 " + base + " 下") + " · ↑↓ 选择 · Tab 补全"),
+              list.map((entry, index) => React.createElement("button", {
+                key: entry.name, type: "button",
+                style: rowItemStyle(index === active), className: "ml-vault-entry",
+                role: "option", "aria-selected": index === active, disabled: busy,
+                onMouseDown: (ev) => { ev.preventDefault(); applyEntry(entry); },
+                onMouseEnter: () => setActive(index),
+              },
+                React.createElement("span", { style: folderGlyphStyle, "aria-hidden": "true" }, "▸"),
+                React.createElement("span", null, entry.name))))
+          : null,
         React.createElement("section", { style: ML_CARD_STYLE, "aria-label": title },
           React.createElement("header", { style: ML_HEADER_STYLE },
             React.createElement("div", null,
@@ -1390,24 +1428,7 @@ window.__ModuleLoader__.load({
                     type: "button", style: primaryBtnStyle, className: "ml-vault-browse",
                     disabled: busy, onClick: browse,
                   }, "浏览…")
-                : null),
-            base !== "" && list.length > 0
-              ? React.createElement("div", { style: baseHintStyle }, "在 " + base + " 下：")
-              : null,
-            entries === null
-              ? React.createElement("div", { style: baseHintStyle }, "正在读取目录…")
-              : list.length === 0
-                ? React.createElement("div", { style: baseHintStyle }, value.trim() === "" ? "输入路径开始，或直接确认使用用户目录" : "此路径下没有匹配的子目录（Enter 仍可确认，不存在会自动创建）")
-                : React.createElement("div", { style: listStyle, role: "listbox", "aria-label": "候选目录" },
-                    list.map((entry, index) => React.createElement("button", {
-                      key: entry.name, type: "button",
-                      style: rowItemStyle(index === active), className: "ml-vault-entry",
-                      role: "option", "aria-selected": index === active, disabled: busy,
-                      onMouseDown: (ev) => { ev.preventDefault(); applyEntry(entry); },
-                      onMouseEnter: () => setActive(index),
-                    },
-                      React.createElement("span", { style: folderGlyphStyle, "aria-hidden": "true" }, "▸"),
-                      React.createElement("span", null, entry.name))))),
+                : null)),
           React.createElement("footer", { style: ML_FOOTER_STYLE },
             React.createElement("span", { style: statusStyle(error !== null), role: "status" },
               error !== null ? error : "Tab 补全 · ↑↓ 选择 · Enter 确认 · Esc 取消"),

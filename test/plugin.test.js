@@ -1010,24 +1010,50 @@ describe('Vault 与 /ml init（端到端）', () => {
     expect(result.text).toContain('不带参数')
   })
 
-  it('vault 内设置覆盖全局，缺键回退全局/默认', async () => {
+  it('vault 内设置覆盖全局，缺键回退全局/默认；vault 键本身不可被文件覆盖', async () => {
     const vaultWs = await mkdtemp(join(tmpdir(), 'dsh-ml-vault2-'))
     try {
       const vhost = createFakeHost({})
       apply(vhost.ctx)
       await vhost.settings.update('memoryleak', { vault: vaultWs, journalMode: 'daily' })
-      // vault 文件只覆盖一个键：journalMode=weekly；其余键缺省回退
-      await writeFile(join(vaultWs, '.memoryleak.yaml'), 'journalMode: weekly\n')
+      // vault 文件只覆盖一个键：journalMode=weekly；还试图改 vault 路径（应被忽略）
+      await writeFile(join(vaultWs, '.memoryleak.yaml'), 'journalMode: weekly\nvault: E:\\hijack\n')
       const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
       const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 周志记录', signal: signal() })
       expect(result.kind).toBe('success')
       expect(result.text).toContain(weeklyFileName(new Date()))
       expect(result.text).toContain('## MemoryLeak · ')
+      // vault 键仍以全局为准：写入落在全局指定的目录，而不是文件里的劫持路径
+      expect(await readFile(join(vaultWs, `${weeklyFileName(new Date())}`), 'utf8')).toContain('周志记录')
       // vault 文件损坏（非法 YAML 顶层）→ 回退全局，不崩溃
       await writeFile(join(vaultWs, '.memoryleak.yaml'), ':::: not yaml [\n')
       const fallback = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 回退记录', signal: signal() })
       expect(fallback.kind).toBe('success')
       expect(fallback.text).toContain(dailyFileName(new Date()))
+    } finally {
+      await rm(vaultWs, { recursive: true, force: true })
+    }
+  })
+
+  it('POST /settings 双写：全局保存后同步（覆盖）vault 内设置文件', async () => {
+    const vaultWs = await mkdtemp(join(tmpdir(), 'dsh-ml-vault-dw-'))
+    try {
+      const vhost = createFakeHost({})
+      apply(vhost.ctx)
+      await vhost.settings.update('memoryleak', { vault: vaultWs })
+      // 预置一份旧的 vault 文件（模拟手改/陈旧值）
+      await writeFile(join(vaultWs, '.memoryleak.yaml'), 'journalMode: weekly\nmaxFiles: 3\n')
+      const post = vhost.routes.find((route) => route.path === '/api/memoryleak/settings')
+      const result = await invokeRoute(post, 'POST', {
+        section: { vault: vaultWs, journalMode: 'daily', maxFiles: 77, defaultStatus: 'all' },
+      })
+      expect(result.status).toBe(200)
+      expect(result.body.ok).toBe(true)
+      // vault 文件被同步为保存后的值（不含 vault 键）
+      const synced = await readFile(join(vaultWs, '.memoryleak.yaml'), 'utf8')
+      expect(synced).toContain('journalMode: daily')
+      expect(synced).toContain('maxFiles: 77')
+      expect(synced).not.toContain('vault:')
     } finally {
       await rm(vaultWs, { recursive: true, force: true })
     }

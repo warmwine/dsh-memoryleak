@@ -3,12 +3,13 @@
  *
  * 两层设置来源（优先级从低到高）：
  *   1. 全局层：~/.dsh/settings.yaml 的 memoryleak: 段（ctx.settings，DSH
- *      官方统一位置）。vault 路径本身只住这一层 —— vault 文件不该反过来
- *      决定自己在哪里。
- *   2. vault 层：<vault>/.memoryleak.yaml（YAML，与 DSH 设置文件同格式，
- *      方便手改）。用户选定 vault 时把当时的生效设置复制过去；之后该
- *      文件里的键覆盖全局层。文件缺失 / 键缺失 / 解析失败 → 逐键回退到
- *      全局层，再回退到 schema 默认值。
+ *      官方统一位置）。vault 路径本身只住这一层 —— vault 文件不允许
+ *      覆盖 vault 键（读取时直接剥离，写入时直接剔除）。
+ *   2. vault 层：<vault>/.memoryleak.yaml（YAML，与 DSH 设置文件同格式）。
+ *      GUI 保存与 /ml init 都会「双写」：全局与 vault 文件同步为同一份
+ *      （见 writeVaultSettingsFile）；vault 文件的价值是随目录迁移，不是
+ *      第三处可分叉的编辑入口（手改仍可读，但下次保存会被覆盖）。
+ *      文件缺失 / 键缺失 / 解析失败 → 逐键回退到全局层，再回退到默认值。
  *
  * 解析始终以 resolveMemoryleakSettings 收口（schema 校验 + 默认值填充），
  * 所以合并结果是深冻结的合法设置。vault 层读出来不是对象（比如手改成了
@@ -120,27 +121,19 @@ export async function resolveEffectiveSettings(globalSection) {
 }
 
 /**
- * 把设置段落写进 vault（YAML；剔除 vault 键）。已存在时不覆盖 —— 已有
- * 的 vault 文件优先级更高，初始化复制不能抹掉用户改过的内容。
+ * 把设置段落写进 vault（YAML；剔除 vault 键 —— 路径只住全局层，vault
+ * 文件不允许覆盖它）。每次都覆盖写入：GUI 保存与 /ml init 都是「同步」
+ * 语义 —— 全局与 vault 文件保持一致；vault 文件的价值是随目录迁移，
+ * 而不是第三处可分叉的编辑入口（手改仍可读，但下次 GUI 保存会被覆盖）。
  *
  * @param {string} vaultDir vault 绝对路径
- * @param {object} section 要复制的设置段（含 vault 键会被剔除）
- * @returns {Promise<boolean>} 是否实际写入（false = 已存在，保留原文件）
+ * @param {object} section 要写入的设置段（含 vault 键会被剔除）
  */
-export async function ensureVaultSettingsFile(vaultDir, section) {
+export async function writeVaultSettingsFile(vaultDir, section) {
   const target = resolve(vaultDir, VAULT_SETTINGS_FILENAME)
   const { vault: _vault, ...rest } = section
-  let exists
-  try {
-    await stat(target)
-    exists = true
-  } catch {
-    exists = false
-  }
-  if (exists) return false
-  const body = '# MemoryLeak vault 设置（复制自全局设置；此文件的键覆盖 ~/.dsh/settings.yaml 的 memoryleak: 段）\n' + YAML.stringify(rest)
+  const body = '# MemoryLeak vault 设置（与 GUI 保存同步；此文件的键覆盖 ~/.dsh/settings.yaml 的 memoryleak: 段，vault 路径除外）\n' + YAML.stringify(rest)
   await writeFile(target, body, 'utf8')
-  return true
 }
 
 function errorMessage(error) {

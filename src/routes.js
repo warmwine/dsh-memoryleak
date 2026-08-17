@@ -24,7 +24,7 @@
 import { MEMORYLEAK_SETTINGS_NAMESPACE, MEMORYLEAK_SETTINGS_DEFAULTS, resolveMemoryleakSettings } from './settings-schema.js'
 import { listWorkspaceFiles } from './journal.js'
 import { dailyFileName, weeklyFileName } from './core/journal.js'
-import { ensureVaultSettingsFile, resolveEffectiveSettings, completeVaultPath } from './vault.js'
+import { writeVaultSettingsFile, resolveEffectiveSettings, completeVaultPath } from './vault.js'
 
 /** 浏览器侧 API 前缀。 */
 export const MEMORYLEAK_API_PREFIX = '/api/memoryleak'
@@ -120,14 +120,15 @@ export function makeMemoryleakRoutes({ ctx, scope, registry }) {
         // 整段替换（本 schema 全是标量与数组，替换语义最诚实）。
         const expected = Number.isInteger(record.expectedRevision) ? record.expectedRevision : undefined
         return ctx.settings.replace(MEMORYLEAK_SETTINGS_NAMESPACE, section, expected).then(async () => {
-          // 设置页保存了非空 vault → 确保 vault 内有设置文件（初始化复制，
-          // 已存在则保留 —— 它优先级更高）。
+          // 双写：全局层已由 replace 落盘；vault 非空时把同一份同步进
+          // <vault>/.memoryleak.yaml（剔除 vault 键 —— 路径只住全局层）。
+          // 目录不可达时不阻塞设置保存本身（命令侧会再兜底）。
           const saved = resolveMemoryleakSettings(scope.get())
           if (saved.vault !== '') {
             try {
-              await ensureVaultSettingsFile(saved.vault, saved)
+              await writeVaultSettingsFile(saved.vault, saved)
             } catch {
-              // 目录不可达时不阻塞设置保存本身；命令侧引导会再兜底。
+              // 见上：同步失败不影响全局保存结果
             }
           }
           json(res, 200, { ok: true, section: saved, revision: revisionOf(ctx) })
