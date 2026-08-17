@@ -33,6 +33,7 @@ import { renderTodoText } from './core/render.js'
 import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
 import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt, readJournalFile, listWorkspaceFiles, readWorkspaceFile } from './journal.js'
 import { resolveViewTarget } from './core/fuzzy.js'
+import { prepareVaultDir, resolveEffectiveSettings, ensureVaultSettingsFile, VAULT_SETTINGS_FILENAME } from './vault.js'
 
 /**
  * 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。
@@ -49,12 +50,13 @@ export const name = 'memoryleak'
 const ML_TYPE_QUESTION_ID = 'ml-type'
 const ML_PRIO_QUESTION_ID = 'ml-prio'
 const ML_DATE_QUESTION_ID = 'ml-date'
+const ML_VAULT_QUESTION_ID = 'ml-vault'
 
 /**
- * 硬依赖：webServer（API 路由）、commands（/ml）、settings（持久化设置）、
- * sessions（/api/memoryleak/files 按会话定位工作区 —— ctx.sessions.get）。
+ * 硬依赖：webServer（API 路由）、commands（/ml）、settings（持久化设置 +
+ * Vault 引导写入）。工作区定位不再依赖会话 —— 一切以设置的 Vault 为根。
  */
-export const inject = ['webServer', 'commands', 'settings', 'sessions']
+export const inject = ['webServer', 'commands', 'settings']
 
 export { createDefaultRegistry, createTodoScanner, createScanLimits }
 
@@ -100,7 +102,10 @@ export function apply(ctx) {
   )
 
   /**
-   * 命令处理器：按文法分发到帮助 / 日志记录 / 待办操作。
+   * 命令处理器：vault 门控 + 分发。
+   *
+   * Vault 未设置时，除 help 外的任何命令都先走一次性引导（选择本地目录），
+   * 成功后继续执行原命令；此后所有读写都以 vault 为根，不再跟随会话工作区。
    *
    * @param {{ agent: { session?: { header?: { cwd?: string } } }, rawInput: string, signal: AbortSignal }} invocation
    * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
@@ -110,11 +115,25 @@ export function apply(ctx) {
     if (parsed.family === 'help') {
       return { kind: 'success', text: renderMlHelp() }
     }
-    const cwd = agent !== null && typeof agent === 'object' ? agent.session?.header?.cwd : undefined
-    if (typeof cwd !== 'string' || cwd === '') {
-      return { kind: 'error', text: '当前会话没有绑定工作区目录。' }
+    let globalSettings = resolveMemoryleakSettings(scope.get())
+    let setupNote = ''
+    if (globalSettings.vault === '') {
+      const setup = await runVaultSetup(agent, signal)
+      if (setup.kind === 'error') return setup
+      setupNote = `已设置 Vault → ${setup.vault}\n`
+      globalSettings = resolveMemoryleakSettings(scope.get())
     }
-    const settings = resolveMemoryleakSettings(scope.get())
+    const cwd = globalSettings.vault
+    const settings = await resolveEffectiveSettings(globalSettings)
+    const result = await dispatchMlCommand({ agent, rawInput, signal, parsed, cwd, settings })
+    if (setupNote !== '' && result.kind === 'success') {
+      return { kind: 'success', text: setupNote + result.text }
+    }
+    return result
+  }
+
+  /** vault 就绪后的实际分发（原命令处理器主体，cwd 即 vault）。 */
+  async function dispatchMlCommand({ agent, rawInput, signal, parsed, cwd, settings }) {
     if (parsed.family === 'journal') {
       const record = await recordJournalNote({ cwd, settings, text: parsed.text })
       const where = record.mode === 'weekly' ? `## MemoryLeak · ${record.date}` : '## MemoryLeak'
@@ -231,6 +250,59 @@ export function apply(ctx) {
   function agentIdOf(agent) {
     const id = agent !== null && typeof agent === 'object' && typeof agent.id === 'string' ? agent.id : '_anonymous'
     return id
+  }
+
+  /**
+   * Vault 一次性引导：问目录（可选项带当前会话工作区，也可手输路径）→
+   * 准备目录（缺失则创建）→ 存进全局设置（~/.dsh/settings.yaml）→ 把
+   * 当时生效的设置复制为 vault 内的 .memoryleak.yaml（已存在则保留，
+   * 它优先级更高）。之后由调用方重新读设置并继续原命令。
+   *
+   * @returns {Promise<{ kind: 'ok', vault: string } | { kind: 'error', text: string }>}
+   */
+  async function runVaultSetup(agent, signal) {
+    const userQuestions = ctx.get('userQuestions')
+    if (userQuestions === undefined) {
+      return { kind: 'error', text: '尚未设置 MemoryLeak 的 Vault 目录，且当前环境没有交互提问界面。请在 GUI 设置 → MemoryLeak 中填写「Vault 目录」后重试。' }
+    }
+    const sessionCwd = agent !== null && typeof agent === 'object' && typeof agent.session?.header?.cwd === 'string' ? agent.session.header.cwd : ''
+    const answer = await userQuestions.ask({
+      agent,
+      signal,
+      questions: [
+        {
+          id: ML_VAULT_QUESTION_ID,
+          header: 'MemoryLeak 初始化',
+          question: '选择 Vault 目录（日志与待办的存放位置；输入本地文件夹路径，或选当前工作区）',
+          options: sessionCwd === '' ? [] : [{ label: sessionCwd, description: '当前会话的工作区' }],
+        },
+      ],
+    })
+    const entry = answer?.answers?.find((item) => item.id === ML_VAULT_QUESTION_ID)
+    const picked = Array.isArray(entry?.selected) ? entry.selected[0] : undefined
+    const custom = typeof entry?.custom === 'string' ? entry.custom.trim() : ''
+    const raw = custom !== '' ? custom : typeof picked === 'string' ? picked : ''
+    if (raw === '') {
+      return { kind: 'error', text: '没有收到有效的目录路径，未设置 Vault。重新执行命令可再次选择，或在 GUI 设置 → MemoryLeak 中填写。' }
+    }
+    let vaultDir
+    try {
+      vaultDir = await prepareVaultDir(raw)
+    } catch (error) {
+      return { kind: 'error', text: `Vault 目录不可用：${error instanceof Error ? error.message : String(error)}` }
+    }
+    try {
+      await ctx.settings.update(MEMORYLEAK_SETTINGS_NAMESPACE, { vault: vaultDir })
+    } catch (error) {
+      return { kind: 'error', text: `保存 Vault 设置失败：${error instanceof Error ? error.message : String(error)}` }
+    }
+    try {
+      // 初始化复制：vault 里已有设置文件则不动（已有内容优先级更高）。
+      await ensureVaultSettingsFile(vaultDir, resolveMemoryleakSettings(scope.get()))
+    } catch (error) {
+      return { kind: 'error', text: `写入 ${VAULT_SETTINGS_FILENAME} 失败：${error instanceof Error ? error.message : String(error)}` }
+    }
+    return { kind: 'ok', vault: vaultDir }
   }
 
   /**

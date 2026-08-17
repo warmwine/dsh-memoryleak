@@ -15,6 +15,8 @@ export const MEMORYLEAK_SETTINGS_NAMESPACE = 'memoryleak'
 
 /** 解析后的默认值（同时作为注册的 base 层）。 */
 export const MEMORYLEAK_SETTINGS_DEFAULTS = Object.freeze({
+  /** Vault 目录（绝对路径；空 = 未初始化，任何命令先引导选择）。 */
+  vault: '',
   extensions: ['md', 'markdown'],
   excludeDirs: [
     'node_modules',
@@ -43,8 +45,9 @@ export const MEMORYLEAK_SETTINGS_DEFAULTS = Object.freeze({
 const EXTENSION_PATTERN = /^[a-z0-9]+$/i
 const DIR_NAME_PATTERN = /^[^\\/:*?"<>|\s]+$/
 
-/** 设置 schema（供 ctx.settings.register 使用）。 */
+/** 设置 schema（供 ctx.settings.register 使用）。vault 只住全局层（~/.dsh/settings.yaml），不进 vault 内设置文件。 */
 export const memoryleakSettingsSchema = z.object({
+  vault: z.string().max(1024).default(''),
   extensions: z.array(z.string().pattern(EXTENSION_PATTERN)).min(1).max(16).default(MEMORYLEAK_SETTINGS_DEFAULTS.extensions),
   excludeDirs: z.array(z.string().pattern(DIR_NAME_PATTERN).max(64)).min(1).max(256).default(MEMORYLEAK_SETTINGS_DEFAULTS.excludeDirs),
   maxFiles: z.number().step(1).min(1).max(50000).default(MEMORYLEAK_SETTINGS_DEFAULTS.maxFiles),

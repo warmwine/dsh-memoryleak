@@ -30,6 +30,8 @@ describe('memoryleak 设置命名空间', () => {
     const legacy = resolveMemoryleakSettings({ defaultStatus: 'open' })
     expect(legacy.journalMode).toBe('daily')
     expect(legacy.weeklyTemplate).toContain('{start}')
+    // vault 默认空（= 未初始化，命令走引导）
+    expect(legacy.vault).toBe('')
   })
 
   it.each([

@@ -48,6 +48,7 @@ window.__ModuleLoader__.load({
     /** 把服务端 section 变成本地可编辑的表单草稿。 */
     function draftOf(section) {
       return {
+        vault: typeof section.vault === "string" ? section.vault : "",
         extensionsText: (section.extensions || []).join(", "),
         excludeText: (section.excludeDirs || []).join("\n"),
         maxFiles: section.maxFiles,
@@ -62,6 +63,8 @@ window.__ModuleLoader__.load({
 
     /** 把草稿变回合法 section；畸形输入在这里报人话错误。 */
     function sectionOf(draft) {
+      const vault = draft.vault.trim();
+      if (vault.length > 1024) throw new Error("Vault 目录路径过长（最多 1024 字符）");
       const extensions = draft.extensionsText.split(/[,\s]+/).map((s) => s.trim().toLowerCase().replace(/^\./, "")).filter((s) => s !== "");
       if (extensions.length === 0) throw new Error("至少需要一个扩展名（如 md）");
       for (const ext of extensions) {
@@ -83,6 +86,7 @@ window.__ModuleLoader__.load({
       if (typeof draft.dailyTemplate !== "string" || draft.dailyTemplate.length > 4096) throw new Error("日志模板必须是 4096 字符以内的文本");
       if (typeof draft.weeklyTemplate !== "string" || draft.weeklyTemplate.length > 4096) throw new Error("周志模板必须是 4096 字符以内的文本");
       return {
+        vault,
         extensions,
         excludeDirs,
         maxFiles,
@@ -179,6 +183,14 @@ window.__ModuleLoader__.load({
 
       return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
         React.createElement("h3", { style: { margin: "4px 0 8px" } }, "MemoryLeak"),
+        row("Vault 目录",
+          React.createElement("input", {
+            value: draft.vault,
+            onChange: (event) => update({ vault: event.target.value }),
+            placeholder: "E:\\notes\\MLeak（留空 = 未初始化）",
+            style: { minWidth: 260, fontVariantNumeric: "tabular-nums" },
+          }),
+          "日志与待办的存放根目录；留空时执行任意 /ml 命令会引导选择。保存后自动把当前设置复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
         row("默认过滤",
           React.createElement("select", {
             value: draft.defaultStatus,
@@ -358,15 +370,12 @@ window.__ModuleLoader__.load({
        「快速打开」选择卡（官方 popupSelect 壳）：自带搜索框本地过滤，
        ↑↓ 移动高亮（默认第 1 项，紧贴搜索框），Enter 选中，Esc 关闭，
        点击卡外任意处关闭。选中即执行 /ml view <文件>（走正常命令面，
-       零 token）。候选来自宿主 /api/memoryleak/files（按会话定位工作区），
-       新文件在前。Tab 补全由上游壳决定（当前版本未绑定 Tab）。 */
+       零 token）。候选来自宿主 /api/memoryleak/files（按设置的 Vault
+       定位，与命令同一根目录），新文件在前。Tab 补全由上游壳决定。 */
     function mlQuickOpenSpec(ctx) {
       return {
-        async options(session, signal) {
-          const sessionId = session !== null && typeof session === "object" ? session.sessionId : undefined
-          if (typeof sessionId !== "string" || sessionId === "") throw new Error("无法定位当前会话")
-          const url = `${API}/files?session=${encodeURIComponent(sessionId)}&limit=50`
-          const res = await fetch(url, signal !== null && signal !== undefined ? { signal } : undefined)
+        async options(_session, signal) {
+          const res = await fetch(`${API}/files?limit=50`, signal !== null && signal !== undefined ? { signal } : undefined)
           const body = await res.json().catch(() => ({}))
           if (!res.ok || body.ok === false) throw new Error(body.error || "HTTP " + res.status)
           const files = Array.isArray(body.files) ? body.files : []
@@ -459,7 +468,7 @@ window.__ModuleLoader__.load({
         setNames(null);
         setCurrentFile(null);
         setError(null);
-        fetch(`${API}/files?session=${encodeURIComponent(sessionId)}&limit=50`)
+        fetch(`${API}/files?limit=50`)
           .then((res) => res.json())
           .then((body) => {
             if (cancelled) return;

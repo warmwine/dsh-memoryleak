@@ -29,6 +29,12 @@ function createFakeSettings() {
       }
     },
     describe: () => [...registrations.values()].map((entry) => ({ ns: entry.ns, revision })),
+    async update(ns, patch) {
+      const entry = registrations.get(ns)
+      if (entry === undefined) throw new Error(`unknown namespace ${ns}`)
+      entry.user = { ...entry.user, ...patch }
+      revision += 1
+    },
     async replace(ns, section) {
       const entry = registrations.get(ns)
       if (entry === undefined) throw new Error(`unknown namespace ${ns}`)
@@ -161,7 +167,7 @@ describe('宿主插件装配（apply）', () => {
 
   it('声明稳定的插件名与硬依赖（inject 与代码实际访问的 ctx 服务一致）', async () => {
     expect(name).toBe('memoryleak')
-    expect(inject).toEqual(['webServer', 'commands', 'settings', 'sessions'])
+    expect(inject).toEqual(['webServer', 'commands', 'settings'])
     // 回归：宿主源码里访问的每个 ctx.<service>（effect 除外）都必须出现在
     // inject 声明里 —— Guard 在属性访问时拦截，桩 ctx 无 Guard 测不出来。
     const hostSources = (
@@ -217,6 +223,7 @@ describe('宿主插件装配（apply）', () => {
     const result = await invokeRoute(get, 'GET')
     expect(result.status).toBe(200)
     expect(result.body.ok).toBe(true)
+    expect(result.body.section.vault).toBe('')
     expect(result.body.section.defaultStatus).toBe('open')
     expect(result.body.section.extensions).toEqual(['md', 'markdown'])
     expect(result.body.revision).toBe(0)
@@ -271,6 +278,7 @@ describe('宿主插件装配（apply）', () => {
   })
 
   it('/ml todo list all 端到端：扫描真实临时工作区', async () => {
+    await host.settings.update('memoryleak', { vault: workspace })
     const result = await command.handler({
       agent: { session: { header: { cwd: workspace } } },
       rawInput: ' todo list all',
@@ -315,19 +323,28 @@ describe('宿主插件装配（apply）', () => {
     expect(result).toEqual({ kind: 'error', text: expect.stringContaining('未知操作') })
   })
 
-  it('会话无工作区返回明确错误', async () => {
+  it('vault 未设置：命令先引导选择（不再看会话工作区）', async () => {
+    await host.settings.update('memoryleak', { vault: '' })
     const result = await command.handler({ agent: { session: { header: {} } }, rawInput: 'todo', signal: new AbortController().signal })
+    // 伪 ask 没有 ml-vault 预设答案 → 引导收不到路径，明确报错（不写入任何东西）
     expect(result.kind).toBe('error')
-    expect(result.text).toContain('工作区')
+    expect(result.text).toContain('没有收到有效的目录路径')
+    expect(host.askLog.at(-1).questions.map((q) => q.id)).toEqual(['ml-vault'])
+    // 会话有 cwd 时引导问题带一个「当前工作区」选项
+    const withCwd = await command.handler({ agent: { session: { header: { cwd: workspace } } }, rawInput: 'todo', signal: new AbortController().signal })
+    expect(withCwd.kind).toBe('error')
+    expect(host.askLog.at(-1).questions[0].options).toEqual([{ label: workspace, description: '当前会话的工作区' }])
   })
 
-  it('工作区目录消失返回环境错误（不崩溃）', async () => {
+  it('vault 指向的目录消失返回环境错误（不崩溃）', async () => {
+    await host.settings.update('memoryleak', { vault: join(workspace, 'nope') })
     const result = await command.handler({
-      agent: { session: { header: { cwd: join(workspace, 'nope') } } },
+      agent: { session: { header: {} } },
       rawInput: 'todo',
       signal: new AbortController().signal,
     })
     expect(result).toEqual({ kind: 'error', text: expect.stringContaining('工作区目录不可用') })
+    await host.settings.update('memoryleak', { vault: workspace })
   })
 
   it('所有副作用可通过 effects 逆回收', () => {
@@ -353,6 +370,7 @@ describe('/ml <文本> 日志记录（端到端）', () => {
     apply(host.ctx)
     command = host.commands.find((definition) => definition.name === 'ml')
     journalWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-journal-'))
+    await host.settings.update('memoryleak', { vault: journalWs })
     const now = new Date()
     today = formatDate(now)
     dailyFile = dailyFileName(now)
@@ -388,7 +406,7 @@ describe('/ml <文本> 日志记录（端到端）', () => {
   })
 
   it('weekly 模式：新建周志（start/end 配置 + 日期分组）', async () => {
-    await host.settings.replace('memoryleak', { journalMode: 'weekly' })
+    await host.settings.update('memoryleak', { journalMode: 'weekly' })
     const result = await run('调研竞品')
     expect(result.kind).toBe('success')
     expect(result.text).toContain(`已记录 → ${weekFile} ## MemoryLeak · ${today}（新建文件）`)
@@ -425,8 +443,9 @@ describe('/ml <文本> 日志记录（端到端）', () => {
   })
 
   it('工作区不可达返回环境错误', async () => {
+    await host.settings.update('memoryleak', { vault: join(journalWs, 'gone') })
     const result = await command.handler({
-      agent: { session: { header: { cwd: join(journalWs, 'gone') } } },
+      agent: { session: { header: {} } },
       rawInput: 'x',
       signal: new AbortController().signal,
     })
@@ -444,6 +463,7 @@ describe('/ml view（端到端）', () => {
     apply(host.ctx)
     command = host.commands.find((definition) => definition.name === 'ml')
     viewWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-view-'))
+    await host.settings.update('memoryleak', { vault: viewWs })
   })
 
   afterAll(async () => {
@@ -483,7 +503,7 @@ describe('/ml view（端到端）', () => {
   })
 
   it('weekly 模式 → 定位周志文件（未创建则提示）', async () => {
-    await host.settings.replace('memoryleak', { journalMode: 'weekly' })
+    await host.settings.update('memoryleak', { journalMode: 'weekly' })
     const weekFile = weeklyFileName(new Date())
     const result = await run('view')
     expect(result.kind).toBe('success')
@@ -523,6 +543,7 @@ describe('/ml view 模糊解析（多文件场景，端到端）', () => {
     apply(host.ctx)
     command = host.commands.find((definition) => definition.name === 'ml')
     fuzzyWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-fuzzy-'))
+    await host.settings.update('memoryleak', { vault: fuzzyWs })
     await writeFile(join(fuzzyWs, '2026-08-15.md'), '# 15 日\n- [ ] a\n')
     await writeFile(join(fuzzyWs, '2026-08-16.md'), '# 16 日\n- [ ] b\n')
     await writeFile(join(fuzzyWs, '2026W33.md'), 'start: 2026-08-10\nend: 2026-08-16\n')
@@ -566,10 +587,9 @@ describe('/ml view 模糊解析（多文件场景，端到端）', () => {
     expect(resolved.text.startsWith('2026-08-15.md\n')).toBe(true)
   })
 
-  it('GET /files：按会话定位工作区，返回文件清单（名字降序）+ 当前日志名', async () => {
-    host.sessions.set('agent-fuzzy-test', { header: { cwd: fuzzyWs } })
+  it('GET /files：按 Vault 定位（名字降序）+ 当前日志名；未设置 Vault → 400', async () => {
     const route = host.routes.find((entry) => entry.path === '/api/memoryleak/files')
-    const ok = await invokeRoute(route, 'GET', undefined, `${route.path}?session=agent-fuzzy-test&limit=10`)
+    const ok = await invokeRoute(route, 'GET', undefined, `${route.path}?limit=10`)
     expect(ok.status).toBe(200)
     expect(ok.body.ok).toBe(true)
     const names = ok.body.files.map((file) => file.name)
@@ -577,10 +597,12 @@ describe('/ml view 模糊解析（多文件场景，端到端）', () => {
     expect(names).toContain('docs/plan.md')
     expect(names[0]).toBe('docs/plan.md') // 降序：docs/ > 2026W33 > 2026-08-16
     expect(ok.body.current).toBe(`${formatDate(new Date())}.md`) // daily 模式的当前日志
-    // 无 session → 400
-    const noSession = await invokeRoute(route, 'GET', undefined, route.path)
-    expect(noSession.status).toBe(400)
-    expect(noSession.body.ok).toBe(false)
+    // 未设置 Vault → 400
+    await host.settings.update('memoryleak', { vault: '' })
+    const noVault = await invokeRoute(route, 'GET')
+    expect(noVault.status).toBe(400)
+    expect(noVault.body.ok).toBe(false)
+    expect(noVault.body.error).toContain('Vault')
   })
 })
 
@@ -594,6 +616,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     apply(host.ctx)
     command = host.commands.find((definition) => definition.name === 'ml')
     todoWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-todo-'))
+    await host.settings.update('memoryleak', { vault: todoWs })
   })
 
   afterAll(async () => {
@@ -665,6 +688,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
   it('anytime：不需要日期问题（只有一轮提问）', async () => {
     const anytimeHost = createFakeHost({ 'ml-type': 'anytime', 'ml-prio': 'medium' })
     apply(anytimeHost.ctx)
+    await anytimeHost.settings.update('memoryleak', { vault: todoWs })
     const anytimeCommand = anytimeHost.commands.find((definition) => definition.name === 'ml')
     const result = await anytimeCommand.handler({
       agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
@@ -682,6 +706,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
   it('非法选项答案被拒绝（不写入）', async () => {
     const badHost = createFakeHost({ 'ml-type': '不存在的类型', 'ml-prio': 'urgent' })
     apply(badHost.ctx)
+    await badHost.settings.update('memoryleak', { vault: todoWs })
     const badCommand = badHost.commands.find((definition) => definition.name === 'ml')
     const result = await badCommand.handler({
       agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
@@ -695,6 +720,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
   it('非法日期被拒绝（不写入）', async () => {
     const badDateHost = createFakeHost({ 'ml-type': 'deadline', 'ml-prio': 'low', 'ml-date': { custom: '明天' } })
     apply(badDateHost.ctx)
+    await badDateHost.settings.update('memoryleak', { vault: todoWs })
     const badDateCommand = badDateHost.commands.find((definition) => definition.name === 'ml')
     const result = await badDateCommand.handler({
       agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
@@ -709,6 +735,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     const bareHost = createFakeHost({})
     bareHost.ctx.get = () => undefined
     apply(bareHost.ctx)
+    await bareHost.settings.update('memoryleak', { vault: todoWs })
     const bareCommand = bareHost.commands.find((definition) => definition.name === 'ml')
     const result = await bareCommand.handler({
       agent: { id: 'agent-todo-test', session: { header: { cwd: todoWs } } },
@@ -734,6 +761,7 @@ describe('/ml todo d 与唤醒转写（端到端）', () => {
     apply(host.ctx)
     command = host.commands.find((definition) => definition.name === 'ml')
     dWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-d-'))
+    await host.settings.update('memoryleak', { vault: dWs })
     // 手工布置：一条远期 sleep、一条到日 sleep、一条 deadline
     const daily = `${formatDate(new Date())}.md`
     const { insertTodoLine } = await import('../src/core/journal.js')
@@ -835,6 +863,7 @@ describe('/ml todo u 撤销（端到端）', () => {
     apply(host.ctx)
     command = host.commands.find((definition) => definition.name === 'ml')
     uWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-u-'))
+    await host.settings.update('memoryleak', { vault: uWs })
     daily = `${formatDate(new Date())}.md`
     const { insertTodoLine } = await import('../src/core/journal.js')
     const content = insertTodoLine('', '- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿')
@@ -907,5 +936,93 @@ describe('/ml todo u 撤销（端到端）', () => {
     const result = await run('todo u 1')
     expect(result.kind).toBe('error')
     expect(result.text).toContain('不带参数')
+  })
+})
+
+describe('Vault 初始化与设置分层（端到端）', () => {
+  const signal = () => new AbortController().signal
+
+  it('vault 未设置：命令引导 → 创建目录 → 保存 + 复制设置文件 → 继续执行原命令', async () => {
+    const vaultWs = await mkdtemp(join(tmpdir(), 'dsh-ml-vault-'))
+    try {
+      // 答案带包裹引号 + 指向不存在的子目录：验证清理与自动创建
+      const target = join(vaultWs, 'sub', 'MLeak')
+      const vhost = createFakeHost({ 'ml-vault': { custom: `"${target}"` } })
+      apply(vhost.ctx)
+      const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
+      const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 初始化记录', signal: signal() })
+      expect(result.kind).toBe('success')
+      expect(result.text).toContain('已设置 Vault →')
+      expect(result.text).toContain('已记录 →')
+      // 引导提问形态：无会话 cwd → 无选项，只有路径输入
+      expect(vhost.askLog[0].questions.map((q) => q.id)).toEqual(['ml-vault'])
+      expect(vhost.askLog[0].questions[0].options).toEqual([])
+      // 设置已持久化（引号被清理）→ 第二次命令不再引导
+      const again = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'todo list all', signal: signal() })
+      expect(again.kind).toBe('success')
+      expect(vhost.askLog).toHaveLength(1)
+      // 初始化复制：vault 里有 .memoryleak.yaml，且不包含 vault 键本身
+      const vaultFile = join(target, '.memoryleak.yaml')
+      const copied = await readFile(vaultFile, 'utf8')
+      expect(copied).toContain('extensions:')
+      expect(copied).not.toContain('vault:')
+      // 记录写进了 vault（而非会话目录）
+      const daily = `${dailyFileName(new Date())}`
+      expect(await readFile(join(target, daily), 'utf8')).toContain('初始化记录')
+    } finally {
+      await rm(vaultWs, { recursive: true, force: true })
+    }
+  })
+
+  it('vault 内设置覆盖全局，缺键回退全局/默认', async () => {
+    const vaultWs = await mkdtemp(join(tmpdir(), 'dsh-ml-vault2-'))
+    try {
+      const vhost = createFakeHost({})
+      apply(vhost.ctx)
+      await vhost.settings.update('memoryleak', { vault: vaultWs, journalMode: 'daily' })
+      // vault 文件只覆盖一个键：journalMode=weekly；其余键缺省回退
+      await writeFile(join(vaultWs, '.memoryleak.yaml'), 'journalMode: weekly\n')
+      const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
+      const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 周志记录', signal: signal() })
+      expect(result.kind).toBe('success')
+      expect(result.text).toContain(weeklyFileName(new Date()))
+      expect(result.text).toContain('## MemoryLeak · ')
+      // vault 文件损坏（非法 YAML 顶层）→ 回退全局，不崩溃
+      await writeFile(join(vaultWs, '.memoryleak.yaml'), ':::: not yaml [\n')
+      const fallback = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: ' 回退记录', signal: signal() })
+      expect(fallback.kind).toBe('success')
+      expect(fallback.text).toContain(dailyFileName(new Date()))
+    } finally {
+      await rm(vaultWs, { recursive: true, force: true })
+    }
+  })
+
+  it('引导答案指向已存在的文件 → 明确错误，不写入设置', async () => {
+    const vaultWs = await mkdtemp(join(tmpdir(), 'dsh-ml-vault3-'))
+    try {
+      const filePath = join(vaultWs, 'afile.txt')
+      await writeFile(filePath, 'x')
+      const vhost = createFakeHost({ 'ml-vault': { custom: filePath } })
+      apply(vhost.ctx)
+      const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
+      const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'x', signal: signal() })
+      expect(result.kind).toBe('error')
+      expect(result.text).toContain('不是目录')
+      // 设置未被保存（仍是默认空 vault），引导问题只问了一次
+      expect(vhost.askLog).toHaveLength(1)
+    } finally {
+      await rm(vaultWs, { recursive: true, force: true })
+    }
+  })
+
+  it('vault 未设置且无交互界面 → 明确错误指向设置页', async () => {
+    const vhost = createFakeHost({})
+    vhost.ctx.get = () => undefined
+    apply(vhost.ctx)
+    const vcommand = vhost.commands.find((definition) => definition.name === 'ml')
+    const result = await vcommand.handler({ agent: { id: 'a', session: { header: {} } }, rawInput: 'todo', signal: signal() })
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('Vault 目录')
+    expect(result.text).toContain('设置')
   })
 })

@@ -5,11 +5,11 @@
  *   GET  /api/memoryleak/settings        → { ok, section, revision, defaults }
  *   POST /api/memoryleak/settings        → { section, expectedRevision? } 整段替换
  *                                      校验失败 400；版本冲突 409（乐观并发）
+ *                                      保存含非空 vault 时顺带做初始化复制
  *   POST /api/memoryleak/settings/reset  → 清空用户层，回到默认
  *   GET  /api/memoryleak/formats         → { ok, formats: [{ id, title, priority }] }
- *   GET  /api/memoryleak/files?session=&limit=
- *                                       → { ok, files: [{ name, bytes }] }（快速打开
- *                                         弹窗的候选源；session 用于定位工作区）
+ *   GET  /api/memoryleak/files?limit=    → { ok, files: [{ name, bytes }] }（快速打开
+ *                                         弹窗的候选源；根目录 = 设置的 Vault）
  *
  * 失败一律显式返回 { ok: false, error }，绝不静默。
  *
@@ -18,6 +18,7 @@
 import { MEMORYLEAK_SETTINGS_NAMESPACE, MEMORYLEAK_SETTINGS_DEFAULTS, resolveMemoryleakSettings } from './settings-schema.js'
 import { listWorkspaceFiles } from './journal.js'
 import { dailyFileName, weeklyFileName } from './core/journal.js'
+import { ensureVaultSettingsFile, resolveEffectiveSettings } from './vault.js'
 
 /** 浏览器侧 API 前缀。 */
 export const MEMORYLEAK_API_PREFIX = '/api/memoryleak'
@@ -112,8 +113,18 @@ export function makeMemoryleakRoutes({ ctx, scope, registry }) {
         }
         // 整段替换（本 schema 全是标量与数组，替换语义最诚实）。
         const expected = Number.isInteger(record.expectedRevision) ? record.expectedRevision : undefined
-        return ctx.settings.replace(MEMORYLEAK_SETTINGS_NAMESPACE, section, expected).then(() => {
-          json(res, 200, { ok: true, section: resolveMemoryleakSettings(scope.get()), revision: revisionOf(ctx) })
+        return ctx.settings.replace(MEMORYLEAK_SETTINGS_NAMESPACE, section, expected).then(async () => {
+          // 设置页保存了非空 vault → 确保 vault 内有设置文件（初始化复制，
+          // 已存在则保留 —— 它优先级更高）。
+          const saved = resolveMemoryleakSettings(scope.get())
+          if (saved.vault !== '') {
+            try {
+              await ensureVaultSettingsFile(saved.vault, saved)
+            } catch {
+              // 目录不可达时不阻塞设置保存本身；命令侧引导会再兜底。
+            }
+          }
+          json(res, 200, { ok: true, section: saved, revision: revisionOf(ctx) })
         })
       })
       .catch((error) => {
@@ -169,7 +180,7 @@ export function makeMemoryleakRoutes({ ctx, scope, registry }) {
     },
   }
 
-  /** GET /files?session=&limit=（快速打开候选；session → live 会话 → cwd） */
+  /** GET /files?limit=（快速打开候选；根目录 = 设置里的 Vault，不再跟随会话） */
   const getFiles = {
     kind: 'exact',
     path: `${MEMORYLEAK_API_PREFIX}/files`,
@@ -178,16 +189,14 @@ export function makeMemoryleakRoutes({ ctx, scope, registry }) {
       Promise.resolve()
         .then(async () => {
           const url = new URL(req.url, 'http://local')
-          const sessionId = url.searchParams.get('session') ?? ''
           const limitParam = Number(url.searchParams.get('limit'))
           const limit = Number.isInteger(limitParam) && limitParam >= 1 && limitParam <= 1000 ? limitParam : 200
-          const session = ctx.sessions?.get(sessionId)
-          const cwd = session?.header?.cwd
-          if (typeof cwd !== 'string' || cwd === '') {
-            throw Object.assign(new Error(`会话 ${sessionId || '(空)'} 没有绑定工作区`), { status: 400 })
+          const globalSettings = resolveMemoryleakSettings(scope.get())
+          if (globalSettings.vault === '') {
+            throw Object.assign(new Error('尚未设置 Vault 目录 —— 执行任意 /ml 命令完成引导，或在设置窗口填写'), { status: 400 })
           }
-          const settings = resolveMemoryleakSettings(scope.get())
-          const files = await listWorkspaceFiles({ cwd, settings, limit })
+          const settings = await resolveEffectiveSettings(globalSettings)
+          const files = await listWorkspaceFiles({ cwd: globalSettings.vault, settings, limit })
           const now = new Date()
           const current =
             settings.journalMode === 'weekly' ? weeklyFileName(now) : dailyFileName(now)
