@@ -124,18 +124,11 @@ window.__ModuleLoader__.load({
 
       const update = (patch) => setDraft((prev) => Object.assign({}, prev, patch));
 
-      const save = () => {
-        let section;
-        try {
-          section = sectionOf(draft);
-        } catch (error) {
-          setMessage({ kind: "error", text: error.message });
-          return;
-        }
+      // 统一的保存通道：持久化一份完整 section（整段替换），409 自动拉新
+      // revision 重试一次（设置页开着时 /ml init 会推进服务端 revision；
+      // 整段替换语义下覆盖即用户意图，不能把表单刷回旧值）。
+      const persist = (section, okText) => {
         setBusy(true);
-        // 提交是整段替换，覆盖即用户意图 —— 遇 409（revision 过期，比如
-        // 设置页开着时执行过 /ml init）自动拉新 revision 重试一次，而不是
-        // 把用户刚改的表单刷回服务端旧值（那正是「清除无效」的根源）。
         const submit = (expectedRevision) =>
           apiPost("/settings", Object.assign({ section }, expectedRevision === null || expectedRevision === undefined ? {} : { expectedRevision }));
         submit(revision)
@@ -146,12 +139,35 @@ window.__ModuleLoader__.load({
           .then((body) => {
             setDraft(draftOf(body.section));
             setRevision(Number.isInteger(body.revision) ? body.revision : revision);
-            setMessage({ kind: "ok", text: "已保存（全局与 Vault 内设置文件已同步）" });
+            setMessage({ kind: "ok", text: okText });
           })
           .catch((error) => {
             setMessage({ kind: "error", text: "保存失败：" + error.message });
           })
           .then(() => setBusy(false));
+      };
+
+      const save = () => {
+        let section;
+        try {
+          section = sectionOf(draft);
+        } catch (error) {
+          setMessage({ kind: "error", text: error.message });
+          return;
+        }
+        persist(section, "已保存（全局与 Vault 内设置文件已同步）");
+      };
+
+      // 清除 = 立即生效：把当前表单（vault 置空）直接持久化，不等「保存」。
+      const clearVault = () => {
+        let section;
+        try {
+          section = sectionOf(Object.assign({}, draft, { vault: "" }));
+        } catch (error) {
+          setMessage({ kind: "error", text: "其他字段尚未合法，无法清除：" + error.message });
+          return;
+        }
+        persist(section, "Vault 已清除（全局与 Vault 内设置文件已同步）");
       };
 
       const reset = () => {
@@ -206,7 +222,7 @@ window.__ModuleLoader__.load({
         React.createElement("div", { key: "Vault 目录", style: { padding: "8px 0", borderBottom: "1px solid rgba(128,128,128,.15)" } },
           React.createElement("span", null, "Vault 目录"),
           React.createElement("p", { style: hintStyle },
-            "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框，「清除」置空（保存后生效，之后命令会提示先 /ml init）。保存时自动复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
+            "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框，「清除」立即清空并保存（之后命令会提示先 /ml init）。保存时自动同步到该目录下的 .memoryleak.yaml（vault 路径除外）"),
           React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 6 } },
             React.createElement("button", { onClick: browse, disabled: picking || busy, style: { flex: "0 0 auto" } }, picking ? "打开中…" : "浏览…"),
             React.createElement("input", {
@@ -216,10 +232,10 @@ window.__ModuleLoader__.load({
               style: { flex: "1 1 auto", minWidth: 0, width: "auto", fontVariantNumeric: "tabular-nums" },
             }),
             React.createElement("button", {
-              onClick: () => { update({ vault: "" }); setMessage({ kind: "ok", text: "Vault 已清空，点「保存」生效" }); },
+              onClick: clearVault,
               disabled: busy || draft.vault.trim() === "",
               style: { flex: "0 0 auto" },
-            }, "清除"))),
+            }, busy ? "处理中…" : "清除"))),
         row("默认过滤",
           React.createElement("select", {
             value: draft.defaultStatus,
@@ -1311,7 +1327,16 @@ window.__ModuleLoader__.load({
           if (list.length > 0) applyEntry(list[Math.min(active, list.length - 1)]);
         } else if (ev.key === "Enter") {
           ev.preventDefault();
-          confirmValue();
+          // Enter 语义：输入以分隔符结尾（或无候选）= 确认该目录；
+          // 还在敲某一段（无尾分隔符）且有候选 = 先补全（同 Tab），
+          // 补全后输入以分隔符结尾，下一次 Enter 即确认。
+          const trimmed = value.trim();
+          const endsWithSeparator = trimmed !== "" && /[\\/]$/.test(trimmed);
+          if (!endsWithSeparator && trimmed !== "" && list.length > 0) {
+            applyEntry(list[Math.min(active, list.length - 1)]);
+          } else {
+            confirmValue();
+          }
         }
       };
 

@@ -20,7 +20,7 @@
  */
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import YAML from 'yaml'
 import { resolveMemoryleakSettings } from './settings-schema.js'
 
@@ -151,12 +151,17 @@ const IS_WIN = process.platform === 'win32'
 /**
  * 按输入前缀列出可作为 Vault 候选的子目录。
  *
- * 约定（客户端按此拼接）：base 是候选所在的父目录（规范化的绝对形式，
- * 盘符候选时为空串），entries 是其下名字以输入尾部匹配的目录名列表。
- * 任何读失败（不存在 / 无权限）都返回空列表 —— 补全永远不抛。
+ * 约定（客户端按此拼接）：base 是候选所在的父目录（path.dirname 的
+ * 规范化结果，盘符候选时为空串），entries 是其下名字以输入尾部匹配的
+ * 目录名列表。任何读失败（不存在 / 无权限）都返回空列表 —— 补全永远
+ * 不抛。
  *
- * @param {string} prefix 输入框当前内容（支持 ~ 前缀展开；Windows 支持
- *   单字母探测盘符、`E:` 视为 `E:\`）
+ * 分隔符两种都收（Windows 上 `e:\x` 与 `e:/x` 等价；dirname/basename
+ * 用 node:path 的平台实现，正斜杠输入得到的 base 会规范成 `e:/` 形式，
+ * readdir 照常工作）；`~` 开头展开用户目录；Windows 单字母/裸盘符
+ * （`e` / `e:`）探测盘符根。
+ *
+ * @param {string} prefix 输入框当前内容
  * @returns {Promise<{ base: string, entries: { name: string }[] }>}
  */
 export async function completeVaultPath(prefix) {
@@ -177,8 +182,11 @@ export async function completeVaultPath(prefix) {
     const root = input.toUpperCase() + '\\'
     return { base: root, entries: await listDirs(root) }
   }
-  const dir = dirnameOf(input)
-  const match = basenameOf(input).toLowerCase()
+  // 以分隔符结尾 = 「列出该目录内容」：base 是它本身（path.dirname 会给出
+  // 父目录，不符合此约定）；否则 base = dirname、匹配段 = basename。
+  const endsWithSeparator = input.length > 0 && /[\\/]$/.test(input)
+  const dir = endsWithSeparator ? input.replace(/[\\/]+$/, '') : dirname(input)
+  const match = endsWithSeparator ? '' : basename(input).toLowerCase()
   return { base: dir, entries: await listDirs(dir, match) }
 }
 
@@ -194,25 +202,4 @@ async function listDirs(dir, match = '') {
   } catch {
     return []
   }
-}
-
-/** dirname 的本地封装：以分隔符结尾的输入，目录就是它本身（列其内容）。 */
-function dirnameOf(input) {
-  if (/[\\/]$/.test(input)) {
-    const trimmed = input.replace(/[\\/]+$/, '')
-    if (trimmed === '') return input
-    if (/^[a-zA-Z]:$/.test(trimmed)) return trimmed + '\\'
-    return trimmed
-  }
-  const slash = Math.max(input.lastIndexOf('/'), input.lastIndexOf('\\'))
-  if (slash < 0) return '.'
-  if (slash === 0) return input.charAt(0)
-  return input.slice(0, slash)
-}
-
-/** basename 的本地封装：以分隔符结尾的输入没有尾段（匹配空前缀）。 */
-function basenameOf(input) {
-  if (input.length > 0 && /[\\/]$/.test(input)) return ''
-  const slash = Math.max(input.lastIndexOf('/'), input.lastIndexOf('\\'))
-  return slash < 0 ? input : input.slice(slash + 1)
 }
