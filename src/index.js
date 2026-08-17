@@ -34,8 +34,21 @@ import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from '
 import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt, readJournalFile, listWorkspaceFiles, readWorkspaceFile } from './journal.js'
 import { resolveViewTarget } from './core/fuzzy.js'
 
-/** 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。 */
+/**
+ * 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。
+ */
 export const name = 'memoryleak'
+
+/**
+ * /ml todo add 提问轮的问题 id：宿主与客户端的共享协议（两处必须同步改）。
+ * web 端客户端半（src/client.js）据此认领 composer：首轮（ml-type + ml-prio）
+ * 渲染「两问同卡、各选一项、选完即自动提交」的组合卡（省掉最后的提交
+ * 点击），日期轮（ml-date）渲染「日历 + 快捷键」选择器；其余环境仍走
+ * 通用问答 UI。答案协议不变：选项走 selected，日期走 custom: yyyy-mm-dd。
+ */
+const ML_TYPE_QUESTION_ID = 'ml-type'
+const ML_PRIO_QUESTION_ID = 'ml-prio'
+const ML_DATE_QUESTION_ID = 'ml-date'
 
 /**
  * 硬依赖：webServer（API 路由）、commands（/ml）、settings（持久化设置）、
@@ -231,13 +244,15 @@ export function apply(ctx) {
       return { kind: 'error', text: '当前环境没有可用的交互提问界面，无法运行 /ml todo add。' }
     }
 
-    // 第一轮：类型 + 优先级（固定选项）
+    // 第一轮：类型 + 优先级（固定选项）。两问同一批发出：web 端客户端半
+    // 认领渲染成一张组合卡（选完两项即自动提交），其余环境走通用逐题问答。
     const choice = await userQuestions.ask({
       agent,
       signal,
       questions: [
         {
-          id: 'type',
+          id: ML_TYPE_QUESTION_ID,
+          header: 'MemoryLeak 待办',
           question: `待办「${text}」的类型？`,
           options: [
             { label: 'deadline', description: '有固定终结日期，到日截止' },
@@ -246,7 +261,8 @@ export function apply(ctx) {
           ],
         },
         {
-          id: 'prio',
+          id: ML_PRIO_QUESTION_ID,
+          header: 'MemoryLeak 待办',
           question: '重要程度？',
           options: [
             { label: 'urgent', description: '紧急' },
@@ -256,22 +272,25 @@ export function apply(ctx) {
         },
       ],
     })
-    const type = pick(choice, 'type', ['deadline', 'sleep', 'anytime'])
-    const prio = pick(choice, 'prio', ['urgent', 'medium', 'low'])
+    const type = pick(choice, ML_TYPE_QUESTION_ID, ['deadline', 'sleep', 'anytime'])
+    const prio = pick(choice, ML_PRIO_QUESTION_ID, ['urgent', 'medium', 'low'])
     if (type === null || prio === null) {
       return { kind: 'error', text: '选择无效：请从给出的选项中选取待办类型与重要程度。' }
     }
 
-    // 第二轮：deadline / sleep 需要日期（自由输入）
+    // 第二轮：deadline / sleep 需要日期。问题 id 固定为 ML_DATE_QUESTION_ID：
+    // web 端本插件的客户端半认领 composer 渲染日期选择器（日历 + 今天/明天/
+    // 本周/本月快捷键）；其余环境（TUI/原生）仍是自由输入。答案统一走
+    // custom: yyyy-mm-dd，格式裁决留在宿主。
     let date = null
     if (type === 'deadline' || type === 'sleep') {
       const hint = type === 'deadline' ? '截止日期' : '唤醒日期'
       const answer = await userQuestions.ask({
         agent,
         signal,
-        questions: [{ id: 'date', question: `${hint}是哪天？（yyyy-mm-dd）` }],
+        questions: [{ id: ML_DATE_QUESTION_ID, header: 'MemoryLeak 待办', question: `${hint}是哪天？（yyyy-mm-dd）` }],
       })
-      const raw = (answer?.answers?.find((entry) => entry.id === 'date')?.custom ?? '').trim()
+      const raw = (answer?.answers?.find((entry) => entry.id === ML_DATE_QUESTION_ID)?.custom ?? '').trim()
       if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
         return { kind: 'error', text: `日期格式无效（收到 "${raw}"），需要 yyyy-mm-dd。待办未写入。` }
       }

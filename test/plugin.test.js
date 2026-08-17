@@ -585,7 +585,7 @@ describe('/ml view 模糊解析（多文件场景，端到端）', () => {
 })
 
 describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
-  const answers = { type: 'deadline', prio: 'urgent', date: { custom: '2026-09-01' } }
+  const answers = { 'ml-type': 'deadline', 'ml-prio': 'urgent', 'ml-date': { custom: '2026-09-01' } }
   const host = createFakeHost(answers)
   let command
   let todoWs
@@ -614,9 +614,12 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
     expect(result.text).toContain('## Todo')
     expect(result.text).toContain('(ml:deadline 2026-09-01 urgent) 完成设计稿')
     expect(result.text).toContain('截止型，日期 2026-09-01，紧急')
-    // 提问形态：第一轮两个固定选项问题，第二轮日期自由输入
-    expect(host.askLog[0].questions.map((q) => q.id)).toEqual(['type', 'prio'])
+    // 提问形态：第一轮两问同批（id 命名空间化 —— web 端客户端半据此渲染
+    // 「选完即提交」的组合卡），第二轮日期自由输入（id 固定 ml-date，
+    // 客户端渲染日历选择器；答案仍走 custom）
+    expect(host.askLog[0].questions.map((q) => q.id)).toEqual(['ml-type', 'ml-prio'])
     expect(host.askLog[0].questions[0].options).toHaveLength(3)
+    expect(host.askLog[1].questions.map((q) => q.id)).toEqual(['ml-date'])
     expect(host.askLog[1].questions[0].options).toBeUndefined()
     // web Provider 依赖 agent.id 路由弹窗（ASK_MISSING_AGENT 回归）
     for (const request of host.askLog) {
@@ -660,7 +663,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
   })
 
   it('anytime：不需要日期问题（只有一轮提问）', async () => {
-    const anytimeHost = createFakeHost({ type: 'anytime', prio: 'medium' })
+    const anytimeHost = createFakeHost({ 'ml-type': 'anytime', 'ml-prio': 'medium' })
     apply(anytimeHost.ctx)
     const anytimeCommand = anytimeHost.commands.find((definition) => definition.name === 'ml')
     const result = await anytimeCommand.handler({
@@ -677,7 +680,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
   })
 
   it('非法选项答案被拒绝（不写入）', async () => {
-    const badHost = createFakeHost({ type: '不存在的类型', prio: 'urgent' })
+    const badHost = createFakeHost({ 'ml-type': '不存在的类型', 'ml-prio': 'urgent' })
     apply(badHost.ctx)
     const badCommand = badHost.commands.find((definition) => definition.name === 'ml')
     const result = await badCommand.handler({
@@ -690,7 +693,7 @@ describe('/ml todo add（交互添加 + sleep 过滤，端到端）', () => {
   })
 
   it('非法日期被拒绝（不写入）', async () => {
-    const badDateHost = createFakeHost({ type: 'deadline', prio: 'low', date: { custom: '明天' } })
+    const badDateHost = createFakeHost({ 'ml-type': 'deadline', 'ml-prio': 'low', 'ml-date': { custom: '明天' } })
     apply(badDateHost.ctx)
     const badDateCommand = badDateHost.commands.find((definition) => definition.name === 'ml')
     const result = await badDateCommand.handler({

@@ -625,6 +625,476 @@ window.__ModuleLoader__.load({
         body);
     }
 
+    /* ---------------- /ml todo add 提问轮接管（composer chain）----------------
+       宿主提问轮的问题 id 固定为 ml-type / ml-prio / ml-date（src/index.js
+       的 ML_*_QUESTION_ID，两处必须同步改）。conversation.composer 是
+       chain 槽：下面的 select 以更低 priority（更先试）认领，且只认领
+       本插件形态的请求 ——
+         · 首轮（ml-type + ml-prio 两问同批）→ MlTodoIntroComposer：两问
+           同卡展示，各选一项，第二项选中的瞬间整批自动提交（省掉通用
+           UI 最后那下「提交」点击）；deadline/sleep 提交后日期轮接管。
+         · 日期轮（单问 ml-date）→ MlDateComposer：日历 + 快捷键。
+       其余请求一律返回 null 放行给通用问题 UI。答案走与通用 UI 完全
+       相同的 respond 协议（选项 selected、日期 custom: yyyy-mm-dd），
+       裁决仍在宿主 —— 只是换皮，无此 UI 的环境（TUI/原生）依旧可用。
+       快捷键语义（周一起始）：今天=当日；明天=+1 天；本周=本周日；
+       本月=当月最后一天。按客户端本地时区解析，与手输一致。 */
+
+    const ML_TYPE_QUESTION_ID = "ml-type";
+    const ML_PRIO_QUESTION_ID = "ml-prio";
+    const ML_DATE_QUESTION_ID = "ml-date";
+    const ML_WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+
+    // 悬停/禁用态用小样式表（内联样式做不了 :hover）；与 dsh 官方插件
+    // 同款注入方式：幂等、随模块加载一次性挂上。日期选择器与首问组合卡
+    // 共用这一份。
+    if (typeof document !== "undefined" && document.querySelector("style[data-ml-date-picker]") === null) {
+      const mlDateStyle = document.createElement("style");
+      mlDateStyle.dataset.mlDatePicker = "1";
+      mlDateStyle.textContent = [
+        ".ml-date-shortcut,.ml-date-day,.ml-date-nav,.ml-date-cancel,.ml-intro-option,.ml-intro-cancel{transition:background .12s ease}",
+        ".ml-date-shortcut:hover:not(:disabled),.ml-date-day:hover:not(:disabled),.ml-date-nav:hover:not(:disabled),.ml-date-cancel:hover:not(:disabled),.ml-intro-option:hover:not(:disabled),.ml-intro-cancel:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}",
+        ".ml-date-shortcut:disabled,.ml-date-day:disabled,.ml-date-nav:disabled,.ml-date-cancel:disabled,.ml-intro-option:disabled,.ml-intro-cancel:disabled{cursor:default;opacity:.5}",
+        ".ml-date-shortcut:focus-visible,.ml-date-day:focus-visible,.ml-date-nav:focus-visible,.ml-date-cancel:focus-visible,.ml-intro-option:focus-visible,.ml-intro-cancel:focus-visible{outline:1px solid var(--dsw-alias-label-primary-bluish);outline-offset:1px}",
+      ].join("\n");
+      document.head.appendChild(mlDateStyle);
+    }
+
+    /** 当日零点（本地时区）。 */
+    function mlStartOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+    /** 加 n 天（跨月/跨年由 Date 自带进位处理）。 */
+    function mlAddDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
+    /** 本周最后一天（周一起始，止于周日）。 */
+    function mlEndOfWeek(d) { return mlAddDays(d, 6 - ((d.getDay() + 6) % 7)); }
+    /** 本月最后一天。 */
+    function mlEndOfMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
+    /** Date → 'yyyy-mm-dd'（本地时区，与宿主校验的格式一致）。 */
+    function mlIsoDate(d) {
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    }
+    /** Date → 'M-dd'（快捷键角标用）。 */
+    function mlShortDate(d) { return (d.getMonth() + 1) + "-" + String(d.getDate()).padStart(2, "0"); }
+
+    /* 接管卡共用壳样式：排版令牌对齐官方 QuestionComposer 的几何（同槽
+       同款卡片），日期选择器与首问组合卡共用，主体各自定义。 */
+    const ML_FRAME_STYLE = {
+      padding: "6px calc(var(--dsh-composer-side-clearance) + 16px) 10px",
+      display: "flex",
+      justifyContent: "center",
+    };
+    const ML_CARD_STYLE = {
+      width: "100%",
+      maxWidth: "var(--dsh-chat-content-width)",
+      border: "1px solid var(--dsw-alias-border-l2-darkmode-thin)",
+      background: "var(--dsw-specific-input-major)",
+      boxShadow: "var(--dsw-shadow-l2)",
+      color: "var(--dsw-alias-label-primary)",
+      borderRadius: 20,
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden",
+      padding: "0 0 10px",
+    };
+    const ML_HEADER_STYLE = {
+      flexShrink: 0,
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: 16,
+      padding: "16px 16px 0 24px",
+    };
+    const ML_EYEBROW_STYLE = { color: "var(--dsw-alias-label-tertiary)", marginBottom: 5, fontSize: 11, lineHeight: "16px" };
+    const ML_TITLE_STYLE = { margin: 0, fontSize: 16, fontWeight: 500, lineHeight: "22px" };
+    const ML_CLOSE_BTN_STYLE = {
+      width: 24, height: 24, display: "grid", placeItems: "center",
+      color: "var(--dsw-alias-label-tertiary)", cursor: "pointer",
+      background: "transparent", border: "none", borderRadius: 999, padding: 0,
+      fontSize: 14, lineHeight: 1,
+    };
+    const ML_BODY_STYLE = {
+      overscrollBehavior: "contain",
+      display: "flex", flexDirection: "column",
+      flex: "auto", minHeight: 0, overflowY: "auto",
+      padding: "10px 16px 0",
+    };
+    const ML_FOOTER_STYLE = {
+      flexShrink: 0, display: "flex", justifyContent: "space-between", alignItems: "center",
+      gap: 12, padding: "8px 16px 2px 24px",
+    };
+    const ML_HINT_STYLE = { color: "var(--dsw-alias-label-tertiary)", fontSize: 12, lineHeight: "16px", minWidth: 0 };
+    const ML_ERROR_STYLE = { color: "var(--dsw-alias-state-error-primary)", fontSize: 12, lineHeight: "16px", minWidth: 0 };
+    const ML_CANCEL_BTN_STYLE = {
+      flexShrink: 0, minHeight: 28, padding: "0 12px", cursor: "pointer",
+      color: "var(--dsw-alias-label-secondary)", background: "transparent",
+      border: "none", borderRadius: 8, fontSize: 13, lineHeight: "20px",
+    };
+
+    /** chain select：只认领「单问题且 id === ml-date」的 question 交互，其余放行。 */
+    function mlSelectDateQuestion(owner) {
+      const interactions = owner !== null && typeof owner === "object" && Array.isArray(owner.interactions) ? owner.interactions : [];
+      for (const interaction of interactions) {
+        if (interaction === null || typeof interaction !== "object" || interaction.kind !== "question") continue;
+        const questions = interaction.payload !== null && typeof interaction.payload === "object" && Array.isArray(interaction.payload.questions)
+          ? interaction.payload.questions
+          : [];
+        if (questions.length === 1 && questions[0] !== null && typeof questions[0] === "object" && questions[0].id === ML_DATE_QUESTION_ID) {
+          return interaction;
+        }
+      }
+      return null;
+    }
+
+    function MlDateComposer({ matched }) {
+      const wait = matched;
+      const questions = wait !== null && typeof wait === "object" && wait.payload !== null && typeof wait.payload === "object" && Array.isArray(wait.payload.questions)
+        ? wait.payload.questions
+        : [];
+      const question = questions[0];
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState(null);
+      const today = React.useMemo(() => mlStartOfDay(new Date()), []);
+      const [view, setView] = React.useState(() => {
+        const now = new Date();
+        return { year: now.getFullYear(), month: now.getMonth() };
+      });
+
+      // 与通用问题 UI（PendingQuestion）同一 respond 协议：成功送整批答案，
+      // 取消送 cancelled 错误；回执被拒不吞，显示在页脚。
+      const settle = (send) => {
+        setBusy(true);
+        setError(null);
+        send().catch((cause) => {
+          setBusy(false);
+          setError(cause instanceof Error ? cause.message : String(cause));
+        });
+      };
+      const answerWith = (date) => settle(async () => {
+        const receipt = await wait.respond({
+          ok: true,
+          value: {
+            sessionId: wait.sessionId,
+            answer: { answers: [{ id: question.id, selected: [], custom: mlIsoDate(date) }] },
+          },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("答案被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+      });
+      const cancelWait = () => settle(async () => {
+        const receipt = await wait.respond({
+          ok: false,
+          error: { code: "cancelled", message: "the user closed this question request", details: {} },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("取消被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+      });
+
+      // Esc 取消（capture 拦截，与实时候选卡同款；IME 组合中不拦）。
+      React.useEffect(() => {
+        if (busy) return undefined;
+        const onKey = (ev) => {
+          if (ev.key !== "Escape" || ev.isComposing === true) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          cancelWait();
+        };
+        document.addEventListener("keydown", onKey, true);
+        return () => document.removeEventListener("keydown", onKey, true);
+      });
+
+      const shortcuts = [
+        { key: "today", label: "今天", date: today },
+        { key: "tomorrow", label: "明天", date: mlAddDays(today, 1) },
+        { key: "week", label: "本周", date: mlEndOfWeek(today) },
+        { key: "month", label: "本月", date: mlEndOfMonth(today) },
+      ];
+
+      // 兜底：载体形态不符（理论上 select 已拦）不渲染 —— 让位通用 UI
+      // 兜底比渲染一个空壳更安全。放在全部 hook 之后，保证 hook 数稳定。
+      if (wait === null || typeof wait !== "object" || question === null || typeof question !== "object") return null;
+
+      const shiftMonth = (delta) => setView((current) => {
+        const next = new Date(current.year, current.month + delta, 1);
+        return { year: next.getFullYear(), month: next.getMonth() };
+      });
+
+      // 日历格：周一起始，含补位的天数（可点，免切月直接选邻月）。
+      const firstOfMonth = new Date(view.year, view.month, 1);
+      const leading = (firstOfMonth.getDay() + 6) % 7;
+      const daysInMonth = new Date(view.year, view.month + 1, 0).getDate();
+      const gridStart = mlAddDays(firstOfMonth, -leading);
+      const cellCount = Math.ceil((leading + daysInMonth) / 7) * 7;
+      const cells = [];
+      for (let i = 0; i < cellCount; i += 1) cells.push(mlAddDays(gridStart, i));
+
+      // 壳样式用共享的 ML_*（见上），这里只有日期主体自己的样式。
+      const shortcutsStyle = { display: "flex", gap: 8, flexShrink: 0 };
+      const shortcutStyle = {
+        flex: "1 1 0", minHeight: 46, display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", gap: 2,
+        cursor: "pointer", background: "transparent",
+        border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 12,
+        color: "var(--dsw-alias-label-primary)", padding: "5px 4px",
+      };
+      const shortcutSubStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "14px" };
+      const calendarStyle = { flexShrink: 0, marginTop: 10 };
+      const navStyle = { display: "flex", alignItems: "center", justifyContent: "center", gap: 12, padding: "2px 0 6px" };
+      const navButtonStyle = {
+        width: 26, height: 26, display: "grid", placeItems: "center",
+        color: "var(--dsw-alias-label-tertiary)", cursor: "pointer",
+        background: "transparent", border: "none", borderRadius: 999, padding: 0,
+        fontSize: 14, lineHeight: 1,
+      };
+      const monthLabelStyle = { fontSize: 14, fontWeight: 500, minWidth: 96, textAlign: "center", lineHeight: "24px" };
+      const weekdayStyle = {
+        display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2,
+        color: "var(--dsw-alias-label-tertiary)", fontSize: 12, lineHeight: "20px", textAlign: "center",
+      };
+      const gridStyle = { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 };
+      const dayStyle = (inMonth, isToday) => ({
+        height: 34, display: "grid", placeItems: "center",
+        cursor: "pointer", background: "transparent", padding: 0,
+        border: isToday ? "1px solid var(--dsw-alias-label-primary-bluish)" : "1px solid transparent",
+        borderRadius: 10, fontSize: 13,
+        color: isToday ? "var(--dsw-alias-label-primary-bluish)" : inMonth ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-label-tertiary)",
+        fontWeight: isToday ? 600 : 400,
+      });
+
+      const title = question !== null && typeof question === "object" && typeof question.question === "string"
+        ? question.question.replace(/（yyyy-mm-dd）\s*$/, "")
+        : "日期是哪天？";
+
+      return React.createElement("div", { style: ML_FRAME_STYLE, "data-ml-date-question": wait !== null && typeof wait === "object" ? wait.key : "" },
+        React.createElement("section", { style: ML_CARD_STYLE, "aria-label": title },
+          React.createElement("header", { style: ML_HEADER_STYLE },
+            React.createElement("div", null,
+              React.createElement("div", { style: ML_EYEBROW_STYLE },
+                question !== null && typeof question === "object" && typeof question.header === "string" ? question.header : "MemoryLeak 待办"),
+              React.createElement("h2", { style: ML_TITLE_STYLE }, title)),
+            React.createElement("button", {
+              type: "button", style: ML_CLOSE_BTN_STYLE, className: "ml-date-cancel",
+              "aria-label": "取消", title: "取消（Esc）", disabled: busy, onClick: cancelWait,
+            }, "✕")),
+          React.createElement("div", { style: ML_BODY_STYLE, "data-ml-date-scroll": true },
+            React.createElement("div", { style: shortcutsStyle, role: "group", "aria-label": "快捷日期" },
+              shortcuts.map((shortcut) => React.createElement("button", {
+                key: shortcut.key, type: "button", style: shortcutStyle, className: "ml-date-shortcut",
+                disabled: busy, onClick: () => answerWith(shortcut.date),
+                title: mlIsoDate(shortcut.date),
+              },
+                React.createElement("span", null, shortcut.label),
+                React.createElement("span", { style: shortcutSubStyle }, mlShortDate(shortcut.date))))),
+            React.createElement("div", { style: calendarStyle },
+              React.createElement("div", { style: navStyle },
+                React.createElement("button", {
+                  type: "button", style: navButtonStyle, className: "ml-date-nav",
+                  "aria-label": "上一月", disabled: busy, onClick: () => shiftMonth(-1),
+                }, "‹"),
+                React.createElement("span", { style: monthLabelStyle }, view.year + " 年 " + (view.month + 1) + " 月"),
+                React.createElement("button", {
+                  type: "button", style: navButtonStyle, className: "ml-date-nav",
+                  "aria-label": "下一月", disabled: busy, onClick: () => shiftMonth(1),
+                }, "›")),
+              React.createElement("div", { style: weekdayStyle, "aria-hidden": "true" },
+                ML_WEEKDAYS.map((label) => React.createElement("span", { key: label }, label))),
+              React.createElement("div", { style: gridStyle, role: "grid", "aria-label": "选择日期" },
+                cells.map((cell) => {
+                  const inMonth = cell.getMonth() === view.month;
+                  const isToday = cell.getTime() === today.getTime();
+                  return React.createElement("button", {
+                    key: mlIsoDate(cell), type: "button",
+                    style: dayStyle(inMonth, isToday), className: "ml-date-day",
+                    role: "gridcell", "aria-label": mlIsoDate(cell), "aria-current": isToday ? "date" : undefined,
+                    disabled: busy, onClick: () => answerWith(cell),
+                  }, String(cell.getDate()));
+                })))),
+          React.createElement("footer", { style: ML_FOOTER_STYLE },
+            React.createElement("span", { style: error !== null ? ML_ERROR_STYLE : ML_HINT_STYLE, role: "status" },
+              error !== null ? error : "点击日期即确认 · Esc 取消"),
+            React.createElement("button", {
+              type: "button", style: ML_CANCEL_BTN_STYLE, className: "ml-date-cancel",
+              disabled: busy, onClick: cancelWait,
+            }, busy ? "处理中…" : "取消"))));
+    }
+
+    /* ---------------- 首轮「类型 + 优先级」组合卡 ----------------
+       认领宿主首批两问（ml-type + ml-prio）：两问同卡展示，点选项只做
+       高亮，两组各有一项的瞬间整批自动提交 —— 通用 UI 里最后一题选完
+       还要点一下「提交」的步骤在这里不存在。先选优先级再选类型同样
+       成立（哪一下补全两组，哪一下提交）。改选在补全前随时可换。 */
+
+    /** chain select：只认领「ml-type + ml-prio 两问同批」的 question 交互。 */
+    function mlSelectTodoIntro(owner) {
+      const interactions = owner !== null && typeof owner === "object" && Array.isArray(owner.interactions) ? owner.interactions : [];
+      for (const interaction of interactions) {
+        if (interaction === null || typeof interaction !== "object" || interaction.kind !== "question") continue;
+        const questions = interaction.payload !== null && typeof interaction.payload === "object" && Array.isArray(interaction.payload.questions)
+          ? interaction.payload.questions
+          : [];
+        if (questions.length !== 2) continue;
+        let typeQ = null;
+        let prioQ = null;
+        for (const question of questions) {
+          if (question === null || typeof question !== "object") continue;
+          if (question.id === ML_TYPE_QUESTION_ID) typeQ = question;
+          else if (question.id === ML_PRIO_QUESTION_ID) prioQ = question;
+        }
+        if (typeQ === null || prioQ === null) continue;
+        if (typeQ.multiSelect === true || prioQ.multiSelect === true) continue;
+        if (!Array.isArray(typeQ.options) || typeQ.options.length === 0) continue;
+        if (!Array.isArray(prioQ.options) || prioQ.options.length === 0) continue;
+        return interaction;
+      }
+      return null;
+    }
+
+    function MlTodoIntroComposer({ matched }) {
+      const wait = matched;
+      const questions = wait !== null && typeof wait === "object" && wait.payload !== null && typeof wait.payload === "object" && Array.isArray(wait.payload.questions)
+        ? wait.payload.questions
+        : [];
+      const typeQ = questions.find((q) => q !== null && typeof q === "object" && q.id === ML_TYPE_QUESTION_ID) ?? null;
+      const prioQ = questions.find((q) => q !== null && typeof q === "object" && q.id === ML_PRIO_QUESTION_ID) ?? null;
+      const [typeLabel, setTypeLabel] = React.useState(null);
+      const [prioLabel, setPrioLabel] = React.useState(null);
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState(null);
+
+      // 与日期卡同款 settle：busy 期间全部禁用，失败回填页脚不吞错。
+      const settle = (send) => {
+        setBusy(true);
+        setError(null);
+        send().catch((cause) => {
+          setBusy(false);
+          setError(cause instanceof Error ? cause.message : String(cause));
+        });
+      };
+      const submit = (t, p) => settle(async () => {
+        const receipt = await wait.respond({
+          ok: true,
+          value: {
+            sessionId: wait.sessionId,
+            answer: {
+              answers: [
+                { id: typeQ.id, selected: [t] },
+                { id: prioQ.id, selected: [p] },
+              ],
+            },
+          },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("答案被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+      });
+      const cancelWait = () => settle(async () => {
+        const receipt = await wait.respond({
+          ok: false,
+          error: { code: "cancelled", message: "the user closed this question request", details: {} },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("取消被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+      });
+
+      // Esc 取消（capture 拦截；IME 组合中不拦）。
+      React.useEffect(() => {
+        if (busy) return undefined;
+        const onKey = (ev) => {
+          if (ev.key !== "Escape" || ev.isComposing === true) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          cancelWait();
+        };
+        document.addEventListener("keydown", onKey, true);
+        return () => document.removeEventListener("keydown", onKey, true);
+      });
+
+      // 兜底：载体形态不符（理论上 select 已拦）不渲染。放在全部 hook
+      // 之后，保证 hook 数稳定。
+      if (wait === null || typeof wait !== "object" || typeQ === null || prioQ === null) return null;
+
+      const chooseType = (label) => {
+        if (busy) return;
+        if (prioLabel !== null) submit(label, prioLabel);
+        else { setTypeLabel(label); setError(null); }
+      };
+      const choosePrio = (label) => {
+        if (busy) return;
+        if (typeLabel !== null) submit(typeLabel, label);
+        else { setPrioLabel(label); setError(null); }
+      };
+
+      const optionsOf = (q) => (Array.isArray(q.options) ? q.options.filter((o) => o !== null && typeof o === "object" && typeof o.label === "string") : []);
+      const typeOptions = optionsOf(typeQ);
+      const prioOptions = optionsOf(prioQ);
+      if (typeOptions.length === 0 || prioOptions.length === 0) return null;
+
+      const title = typeof typeQ.question === "string" && typeQ.question !== "" ? typeQ.question : "待办的类型？";
+      const prioTitle = typeof prioQ.question === "string" && prioQ.question !== "" ? prioQ.question : "重要程度？";
+      const eyebrow = typeof typeQ.header === "string" && typeQ.header !== "" ? typeQ.header : "MemoryLeak 待办";
+
+      const rowsStyle = { display: "flex", flexDirection: "column", gap: 2 };
+      const rowStyle = (selected) => ({
+        width: "100%", minHeight: 40, display: "flex", alignItems: "center", gap: 10,
+        cursor: "pointer", textAlign: "left",
+        background: selected ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+        border: "1px solid " + (selected ? "var(--dsw-alias-label-primary-bluish)" : "transparent"),
+        borderRadius: 10, padding: "6px 10px", color: "var(--dsw-alias-label-primary)",
+      });
+      const numberStyle = { flex: "0 0 auto", width: 18, color: "var(--dsw-alias-label-tertiary)", fontSize: 12, lineHeight: "16px", textAlign: "center", fontVariantNumeric: "tabular-nums" };
+      const rowLabelStyle = { flex: "0 0 auto", fontSize: 14, lineHeight: "20px", fontWeight: 500 };
+      const rowDescStyle = { flex: "1 1 auto", minWidth: 0, color: "var(--dsw-alias-label-tertiary)", fontSize: 12, lineHeight: "16px", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+      const groupLabelStyle = { color: "var(--dsw-alias-label-secondary)", fontSize: 13, fontWeight: 500, lineHeight: "18px", margin: "12px 2px 4px" };
+      const chipsStyle = { display: "flex", gap: 8 };
+      const chipStyle = (selected) => ({
+        flex: "1 1 0", minHeight: 46, display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", gap: 2,
+        cursor: "pointer",
+        background: selected ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
+        border: "1px solid " + (selected ? "var(--dsw-alias-label-primary-bluish)" : "var(--dsw-alias-border-l1)"),
+        borderRadius: 12, padding: "5px 4px", color: "var(--dsw-alias-label-primary)",
+      });
+      const chipDescStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "14px" };
+
+      return React.createElement("div", { style: ML_FRAME_STYLE, "data-ml-intro-question": wait.key },
+        React.createElement("section", { style: ML_CARD_STYLE, "aria-label": title },
+          React.createElement("header", { style: ML_HEADER_STYLE },
+            React.createElement("div", null,
+              React.createElement("div", { style: ML_EYEBROW_STYLE }, eyebrow),
+              React.createElement("h2", { style: ML_TITLE_STYLE }, title)),
+            React.createElement("button", {
+              type: "button", style: ML_CLOSE_BTN_STYLE, className: "ml-intro-cancel",
+              "aria-label": "取消", title: "取消（Esc）", disabled: busy, onClick: cancelWait,
+            }, "✕")),
+          React.createElement("div", { style: ML_BODY_STYLE, "data-ml-intro-scroll": true },
+            React.createElement("div", { style: rowsStyle, role: "radiogroup", "aria-label": title },
+              typeOptions.map((option, index) => React.createElement("button", {
+                key: option.label, type: "button", style: rowStyle(option.label === typeLabel), className: "ml-intro-option",
+                role: "radio", "aria-checked": option.label === typeLabel, disabled: busy,
+                onClick: () => chooseType(option.label),
+              },
+                React.createElement("span", { style: numberStyle }, String(index + 1)),
+                React.createElement("span", { style: rowLabelStyle }, option.label),
+                typeof option.description === "string" ? React.createElement("span", { style: rowDescStyle }, option.description) : null))),
+            React.createElement("div", { style: groupLabelStyle }, prioTitle),
+            React.createElement("div", { style: chipsStyle, role: "radiogroup", "aria-label": prioTitle },
+              prioOptions.map((option) => React.createElement("button", {
+                key: option.label, type: "button", style: chipStyle(option.label === prioLabel), className: "ml-intro-option",
+                role: "radio", "aria-checked": option.label === prioLabel, disabled: busy,
+                onClick: () => choosePrio(option.label),
+              },
+                React.createElement("span", { style: rowLabelStyle }, option.label),
+                typeof option.description === "string" ? React.createElement("span", { style: chipDescStyle }, option.description) : null)))),
+          React.createElement("footer", { style: ML_FOOTER_STYLE },
+            React.createElement("span", { style: error !== null ? ML_ERROR_STYLE : ML_HINT_STYLE, role: "status" },
+              error !== null ? error : "类型与重要程度各选一项，选完自动提交 · Esc 取消"),
+            React.createElement("button", {
+              type: "button", style: ML_CANCEL_BTN_STYLE, className: "ml-intro-cancel",
+              disabled: busy, onClick: cancelWait,
+            }, busy ? "处理中…" : "取消"))));
+    }
+
     /* ---------------- 插件入口 ---------------- */
     // sessions/conversation 是槽位 inject 工厂里解析会话输入 shell 的硬依赖，
     // 必须声明，否则运行时报 cannot get property "sessions" without inject。
@@ -643,6 +1113,22 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("conversation.chat.commandview", () => ctx.slots.register(
         { name: "conversation.chat.commandview", key: "ml" },
         (owner) => React.createElement(MlCommandView, { node: owner === null || owner === undefined ? null : owner.node })
+      ));
+
+      // /ml todo add 首轮（类型 + 优先级）：composer 接管渲染组合卡，选完
+      // 两项即自动提交（通用 UI 最后一题还需点「提交」）。priority 负值先
+      // 于通用问题 UI 尝试；select 只认领 ml-type + ml-prio 两问批次。
+      ctx.slots.inject("conversation.composer", () => ctx.slots.register(
+        { name: "conversation.composer", priority: -100, select: mlSelectTodoIntro },
+        MlTodoIntroComposer
+      ));
+
+      // /ml todo add 日期轮：composer 接管渲染日期选择器（日历 + 快捷键）。
+      // priority 负值先于通用问题 UI（dsh-client-ui-user-questions，默认 0）
+      // 尝试；select 只认领 id 为 ml-date 的单问题请求，其余问题原样放行。
+      ctx.slots.inject("conversation.composer", () => ctx.slots.register(
+        { name: "conversation.composer", priority: -100, select: mlSelectDateQuestion },
+        MlDateComposer
       ));
 
       // 命令菜单选中 /ml → 快速打开弹窗（VSCode Ctrl+P 风格查看文件）。
