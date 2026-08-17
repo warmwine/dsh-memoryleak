@@ -199,15 +199,15 @@ window.__ModuleLoader__.load({
       return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
         React.createElement("h3", { style: { margin: "4px 0 8px" } }, "MemoryLeak"),
         row("Vault 目录",
-          React.createElement("div", { style: { display: "flex", gap: 8, flex: "1 1 auto", justifyContent: "flex-end", minWidth: 0 } },
+          React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flex: "0 0 auto" } },
             React.createElement("button", { onClick: browse, disabled: picking || busy }, picking ? "打开中…" : "浏览…"),
             React.createElement("input", {
               value: draft.vault,
               onChange: (event) => update({ vault: event.target.value }),
               placeholder: "E:\\notes\\MLeak（留空 = 未初始化）",
-              style: { flex: "1 1 auto", minWidth: 160, fontVariantNumeric: "tabular-nums" },
+              style: { minWidth: 200, width: 260, fontVariantNumeric: "tabular-nums" },
             })),
-          "日志与待办的存放根目录；留空时执行任意 /ml 命令会引导选择。保存后自动把当前设置复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
+          "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框。留空时执行任意 /ml 命令会引导选择。保存后自动把当前设置复制为该目录下的 .memoryleak.yaml（已存在则保留，其键优先级更高）"),
         row("默认过滤",
           React.createElement("select", {
             value: draft.defaultStatus,
@@ -388,13 +388,21 @@ window.__ModuleLoader__.load({
        ↑↓ 移动高亮（默认第 1 项，紧贴搜索框），Enter 选中，Esc 关闭，
        点击卡外任意处关闭。选中即执行 /ml view <文件>（走正常命令面，
        零 token）。候选来自宿主 /api/memoryleak/files（按设置的 Vault
-       定位，与命令同一根目录），新文件在前。Tab 补全由上游壳决定。 */
+       定位，与命令同一根目录），新文件在前。Tab 补全由上游壳决定。
+       候选拉取失败（如 Vault 未设置）一律返回空列表 —— 快速打开只是
+       便利层，绝不能拦住命令本身：面板空着，用户手输 /ml 回车照常
+       走 vault 引导。 */
     function mlQuickOpenSpec(ctx) {
       return {
         async options(_session, signal) {
-          const res = await fetch(`${API}/files?limit=50`, signal !== null && signal !== undefined ? { signal } : undefined)
-          const body = await res.json().catch(() => ({}))
-          if (!res.ok || body.ok === false) throw new Error(body.error || "HTTP " + res.status)
+          let body = {};
+          try {
+            const res = await fetch(`${API}/files?limit=50`, signal !== null && signal !== undefined ? { signal } : undefined)
+            body = await res.json().catch(() => ({}))
+            if (!res.ok || body.ok === false) return []
+          } catch {
+            return []
+          }
           const files = Array.isArray(body.files) ? body.files : []
           if (files.length === 0) return []
           return files.map((file) => ({

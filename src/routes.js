@@ -81,9 +81,17 @@ function revisionOf(ctx) {
 }
 
 /**
- * Windows 原生目录选择对话框（PowerShell FolderBrowserDialog，STA）。
- * 返回选中路径；取消 / 出错 / 非Windows 返回 null。对话框期间请求挂起
- * （异步等待，不阻塞服务），用户长时间开着也没关系。
+ * Windows 原生目录选择对话框（PowerShell WinForms FolderBrowserDialog，
+ * STA 线程 + 隐藏控制台）。返回选中路径的 UTF-8 文本；取消 / 出错 /
+ * 非 Windows 返回 null。对话框期间请求挂起（异步等待，不阻塞服务）。
+ *
+ * 脚本注意（都是踩过的坑）：
+ *   - 方法调用用点号（`.Write`）——PowerShell 没有 C# 的 `::Write` 语法，
+ *     写错整段脚本静默失败，表现恰是「点了按钮没反应」；
+ *   - 先设 `[Console]::OutputEncoding = UTF8` 再输出，否则中文路径按系统
+ *     ANSI（GBK）编码，Node 侧按 UTF-8 解码会乱码；
+ *   - ShowDialog 挂一个 TopMost 的隐藏 owner，否则对话框可能弹在所有
+ *     窗口后面（宿主进程自己没有前台窗口）。
  *
  * @returns {Promise<string | null>}
  */
@@ -93,12 +101,16 @@ function nativePickDirectory() {
       resolvePromise(null)
       return
     }
-    const script =
-      "Add-Type -AssemblyName System.Windows.Forms; " +
-      "$d = New-Object System.Windows.Forms.FolderBrowserDialog; " +
-      "$d.Description = '选择 MemoryLeak Vault 目录'; " +
-      "$d.ShowNewFolderButton = $true; " +
-      "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out::Write($d.SelectedPath) }"
+    const script = [
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+      'Add-Type -AssemblyName System.Windows.Forms',
+      '$d = New-Object System.Windows.Forms.FolderBrowserDialog',
+      "$d.Description = 'MemoryLeak Vault'",
+      '$d.ShowNewFolderButton = $true',
+      '$f = New-Object System.Windows.Forms.Form',
+      '$f.TopMost = $true',
+      'if ($d.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) { $d.SelectedPath }',
+    ].join('; ')
     execFile(
       'powershell.exe',
       ['-NoProfile', '-STA', '-NonInteractive', '-Command', script],
