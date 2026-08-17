@@ -180,7 +180,8 @@ export async function completeVaultPath(prefix) {
     }
   }
   if (IS_WIN && /^[a-zA-Z]:$/.test(input)) {
-    const root = input.toUpperCase() + ':\\'
+    // 注意：input 自带冒号，不能再拼一个（否则得到 "E::\"）。
+    const root = input.toUpperCase() + '\\'
     return { base: root, entries: await listDirs(root) }
   }
   const dir = dirnameOf(input)

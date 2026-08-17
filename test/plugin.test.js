@@ -1055,6 +1055,13 @@ describe('Vault 初始化与设置分层（端到端）', () => {
       const missing = await call(join(tree, 'nope', 'x'))
       expect(missing.status).toBe(200)
       expect(missing.body.entries).toEqual([])
+      // Windows 盘符形式规范化：`E:` → base 为 `E:\`（不得双冒号）
+      if (process.platform === 'win32') {
+        const drive = await call('E:')
+        expect(drive.status).toBe(200)
+        expect(drive.body.base).toBe('E:\\')
+        expect(Array.isArray(drive.body.entries)).toBe(true)
+      }
     } finally {
       await rm(tree, { recursive: true, force: true })
     }
