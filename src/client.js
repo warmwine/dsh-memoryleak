@@ -629,9 +629,9 @@ window.__ModuleLoader__.load({
       };
       const hintStyle = {
         color: "var(--dsw-alias-label-tertiary)",
-        fontSize: 12,
+        fontSize: 11,
         lineHeight: "16px",
-        padding: "8px 10px 6px",
+        padding: "5px 10px 4px",
         borderBottom: "1px solid var(--dsw-alias-border-l1)",
         flex: "0 0 auto",
       };
@@ -640,32 +640,32 @@ window.__ModuleLoader__.load({
         justifyContent: "space-between",
         gap: 8,
         alignItems: "center",
-        minHeight: 36,
-        padding: "8px 10px",
-        fontSize: 14,
-        lineHeight: "22px",
+        minHeight: 26,
+        padding: "3px 10px",
+        fontSize: 13,
+        lineHeight: "20px",
         cursor: "pointer",
         width: "100%",
         textAlign: "left",
         background: isActive ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
         border: "none",
-        borderRadius: 10,
+        borderRadius: 7,
         color: "var(--dsw-alias-label-primary)",
         whiteSpace: "nowrap",
         overflow: "hidden",
         textOverflow: "ellipsis",
       });
-      const metaStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 12, lineHeight: "16px", flex: "0 0 auto" };
+      const metaStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "16px", flex: "0 0 auto" };
 
       const statusRow = (text, isError) => React.createElement("div", {
         style: {
           color: isError ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-dimmed)",
-          fontSize: 14,
-          lineHeight: "22px",
-          minHeight: 40,
+          fontSize: 13,
+          lineHeight: "20px",
+          minHeight: 26,
           display: "flex",
           alignItems: "center",
-          padding: "8px 10px",
+          padding: "3px 10px",
         },
       }, text);
 
@@ -1385,18 +1385,18 @@ window.__ModuleLoader__.load({
       };
       const popupHintStyle = {
         color: "var(--dsw-alias-label-tertiary)",
-        fontSize: 12, lineHeight: "16px",
-        padding: "8px 10px 6px",
+        fontSize: 11, lineHeight: "16px",
+        padding: "5px 10px 4px",
         borderBottom: "1px solid var(--dsw-alias-border-l1)",
         flex: "0 0 auto",
         whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
       };
       const rowItemStyle = (isActive) => ({
-        width: "100%", minHeight: 34, display: "flex", alignItems: "center", gap: 8,
+        width: "100%", minHeight: 26, display: "flex", alignItems: "center", gap: 8,
         cursor: "pointer", textAlign: "left", border: "none",
         background: isActive ? "var(--dsw-alias-interactive-bg-hover)" : "transparent",
-        borderRadius: 8, padding: "5px 10px", color: "var(--dsw-alias-label-primary)",
-        fontSize: 14, lineHeight: "20px",
+        borderRadius: 7, padding: "3px 10px", color: "var(--dsw-alias-label-primary)",
+        fontSize: 13, lineHeight: "20px",
       });
       const folderGlyphStyle = { flex: "0 0 auto", color: "var(--dsw-alias-label-primary-bluish)", fontSize: 13 };
       const statusStyle = (isError) => ({
