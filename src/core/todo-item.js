@@ -15,9 +15,10 @@ import { isValidTodoMeta } from './formats/memoryleak-todo.js'
  * @property {number} line 1 起始行号
  * @property {string} text 待办正文（已 trim，非空）
  * @property {boolean} done 是否已完成
+ * @property {boolean} cancelled 是否已取消（[-] 行；与 done 互斥）
  * @property {string} format 识别它的格式 Strategy id
  * @property {string | null} raw 原始行（诊断用），可空
- * @property {{ type: string, date: string | null, prio: string } | null} meta
+ * @property {{ type: string, date: string | null, prio: string, doneAt?: string | null, cancelledAt?: string | null } | null} meta
  *   结构化元数据（memoryleak-todo 策略携带）；普通待办为 null
  */
 
@@ -29,6 +30,7 @@ import { isValidTodoMeta } from './formats/memoryleak-todo.js'
  * @param {number} fields.line
  * @param {string} fields.text
  * @param {boolean} fields.done
+ * @param {boolean} [fields.cancelled]
  * @param {string} fields.format
  * @param {string} [fields.raw]
  * @param {object | null} [fields.meta]
@@ -36,11 +38,13 @@ import { isValidTodoMeta } from './formats/memoryleak-todo.js'
  */
 export function createTodoItem(fields) {
   invariant(fields !== null && typeof fields === 'object', 'todo item 必须是对象')
-  const { file, line, text, done, format, raw, meta } = fields
+  const { file, line, text, done, cancelled = false, format, raw, meta } = fields
   invariant(typeof file === 'string' && file !== '', 'todo item.file 必须是非空字符串')
   invariant(Number.isInteger(line) && line >= 1, `todo item.line 必须是 >=1 的整数（收到 ${String(line)}）`)
   invariant(typeof text === 'string' && text.trim() !== '', `todo item.text 必须是非空字符串（文件 ${file}:${line}）`)
   invariant(typeof done === 'boolean', `todo item.done 必须是布尔值（文件 ${file}:${line}）`)
+  invariant(typeof cancelled === 'boolean', `todo item.cancelled 必须是布尔值（文件 ${file}:${line}）`)
+  invariant(!(done === true && cancelled === true), `todo item 不能同时完成与取消（文件 ${file}:${line}）`)
   invariant(typeof format === 'string' && format !== '', `todo item.format 必须是非空字符串（文件 ${file}:${line}）`)
   if (meta !== null && meta !== undefined && !isValidTodoMeta(meta)) {
     throw new TodoError(`todo item.meta 形状非法（文件 ${file}:${line}）`)
@@ -50,6 +54,7 @@ export function createTodoItem(fields) {
     line,
     text: text.trim(),
     done,
+    cancelled,
     format,
     raw: typeof raw === 'string' ? raw : null,
     meta: meta === null || meta === undefined ? null : Object.freeze({ ...meta }),
@@ -63,6 +68,7 @@ export function materializeTodoItem(match, file, line) {
     line,
     text: match.text,
     done: match.done,
+    cancelled: match.cancelled === true,
     format: match.format,
     raw: match.raw,
     meta: match.meta ?? null,

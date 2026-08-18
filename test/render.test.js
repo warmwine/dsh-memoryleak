@@ -95,7 +95,7 @@ describe('renderTodoJson（AI 预留的结构化契约）', () => {
     const query = createTodoQuery({ status: 'open', text: 'gamma' })
     const payload = renderTodoJson(report, query)
     const round = JSON.parse(JSON.stringify(payload))
-    expect(round.summary).toEqual({ total: 1, open: 1, done: 0, files: 2, truncated: false })
+    expect(round.summary).toEqual({ total: 1, open: 1, done: 0, cancelled: 0, files: 2, truncated: false })
     expect(round.query).toEqual({ action: 'list', status: 'open', text: 'gamma', limit: null })
     expect(round.groups).toEqual([
       { file: 'docs/plan.md', todos: [{ line: 1, text: 'gamma deploy', done: false, format: 'markdown-checkbox' }] },

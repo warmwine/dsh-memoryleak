@@ -896,7 +896,7 @@ describe('/ml todo u 撤销（端到端）', () => {
 
     const undone = await run('todo u')
     expect(undone.kind).toBe('success')
-    expect(undone.text).toContain('已撤销 #1 → 未完成 ☐')
+    expect(undone.text).toContain('已撤销完成')
     expect(undone.text).toContain('完成设计稿')
     const after = (await readFile(join(uWs, daily), 'utf8')).trim()
     expect(after).toContain('- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿')
@@ -928,7 +928,7 @@ describe('/ml todo u 撤销（端到端）', () => {
     await run('todo d 1') // → open
     const undone = await run('todo u') // → done（撤销第二次 d）
     expect(undone.kind).toBe('success')
-    expect(undone.text).toContain('已撤销 #1 → 已完成 ☑')
+    expect(undone.text).toContain('已撤销完成')
     const today = formatDate(new Date())
     expect((await readFile(join(uWs, daily), 'utf8')).trim()).toContain(`- [x] (ml:deadline 2026-09-01 urgent done:${today}) 改过的内容`)
   })
@@ -937,6 +937,163 @@ describe('/ml todo u 撤销（端到端）', () => {
     const result = await run('todo u 1')
     expect(result.kind).toBe('error')
     expect(result.text).toContain('不带参数')
+  })
+})
+
+describe('/ml todo c 取消 与 p 延期（端到端）', () => {
+  const host = createFakeHost()
+  let command
+  let cpWs
+  let daily
+
+  beforeAll(async () => {
+    apply(host.ctx)
+    command = host.commands.find((definition) => definition.name === 'ml')
+    cpWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-cp-'))
+    await host.settings.update('memoryleak', { vault: cpWs })
+    daily = `${formatDate(new Date())}.md`
+  })
+
+  afterAll(async () => {
+    await rm(cpWs, { recursive: true, force: true })
+  })
+
+  /** 重置工作文件：一条 deadline（临近）+ 一条 anytime + 一条普通待办。 */
+  async function resetFile() {
+    const { insertTodoLine } = await import('../src/core/journal.js')
+    let content = ''
+    for (const line of [
+      '- [ ] (ml:deadline 2026-09-10 urgent) 交设计稿',
+      '- [ ] (ml:anytime medium) 整理收藏夹',
+      '- [ ] 手写的普通待办',
+      '- [ ] (ml:sleep 2026-12-01 low) 学内部源码',
+    ]) {
+      content = insertTodoLine(content, line)
+    }
+    await writeFile(join(cpWs, daily), content)
+  }
+
+  const run = (rawInput) =>
+    command.handler({
+      agent: { id: 'agent-cp-test', session: { header: { cwd: cpWs } } },
+      rawInput,
+      signal: new AbortController().signal,
+    })
+
+  it('c 1：deadline 被取消（[-] + cancelled:戳），从默认列表消失', async () => {
+    await resetFile()
+    await run('todo list')
+    const result = await run('todo c 1')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('已取消 ☒')
+    const today = formatDate(new Date())
+    const file = await readFile(join(cpWs, daily), 'utf8')
+    expect(file).toContain(`- [-] (ml:deadline 2026-09-10 urgent cancelled:${today}) 交设计稿`)
+    // 默认列表只剩 2 条（取消的隐藏；sleep 未唤醒本就隐藏）
+    const listResult = await run('todo list')
+    expect(listResult.text).toContain('待办 2 条')
+    expect(listResult.text).not.toContain('交设计稿')
+    // cancelled 过滤词可单看
+    const cancelledList = await run('todo l cancelled')
+    expect(cancelledList.text).toContain('交设计稿')
+    expect(cancelledList.text).toContain('已取消')
+  })
+
+  it('c 再执行一次 → 恢复 ☐；u 也能撤销取消', async () => {
+    await run('todo l cancelled')
+    const restored = await run('todo c 1')
+    expect(restored.kind).toBe('success')
+    expect(restored.text).toContain('已恢复 ☐')
+    expect(await readFile(join(cpWs, daily), 'utf8')).toContain('- [ ] (ml:deadline 2026-09-10 urgent) 交设计稿')
+    // 再取消一次然后 u 撤销
+    await run('todo list')
+    await run('todo c 1')
+    const undone = await run('todo u')
+    expect(undone.kind).toBe('success')
+    expect(undone.text).toContain('已撤销取消')
+    expect(await readFile(join(cpWs, daily), 'utf8')).toContain('- [ ] (ml:deadline 2026-09-10 urgent) 交设计稿')
+  })
+
+  it('c 对已完成条目 → 红字报错并指引', async () => {
+    await resetFile()
+    await run('todo list')
+    await run('todo d 1')
+    await run('todo l all')
+    const result = await run('todo c 1')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('已完成')
+    expect(result.text).toContain('/ml todo d')
+  })
+
+  it('d 对已取消条目 → 红字报错并指引先恢复', async () => {
+    await resetFile()
+    await run('todo list')
+    await run('todo c 1') // 取消 deadline
+    await run('todo l cancelled')
+    const result = await run('todo d 1')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('已取消')
+    expect(result.text).toContain('/ml todo c')
+  })
+
+  it('p 1：deadline 延 1 天（缺省）；p 2 7 → 延 7 天；u 撤销恢复原日期', async () => {
+    await resetFile()
+    await run('todo list')
+    const p1 = await run('todo p 1')
+    expect(p1.kind).toBe('success')
+    expect(p1.text).toContain('2026-09-10 → 2026-09-11（延 1 天）')
+    expect(await readFile(join(cpWs, daily), 'utf8')).toContain('- [ ] (ml:deadline 2026-09-11 urgent) 交设计稿')
+
+    await run('todo list')
+    const p7 = await run('todo p 1 7')
+    expect(p7.kind).toBe('success')
+    expect(p7.text).toContain('2026-09-11 → 2026-09-18（延 7 天）')
+    expect(await readFile(join(cpWs, daily), 'utf8')).toContain('- [ ] (ml:deadline 2026-09-18 urgent) 交设计稿')
+
+    const undone = await run('todo u')
+    expect(undone.kind).toBe('success')
+    expect(undone.text).toContain('已撤销延期')
+    expect(await readFile(join(cpWs, daily), 'utf8')).toContain('- [ ] (ml:deadline 2026-09-11 urgent) 交设计稿')
+  })
+
+  it('p 对 anytime/sleep/普通待办 → 红字报错「只有 deadline 型」', async () => {
+    await resetFile()
+    await run('todo l all') // all 视图含未唤醒 sleep，四条都可寻址
+    const anytimeResult = await run('todo p 2')
+    expect(anytimeResult.kind).toBe('error')
+    expect(anytimeResult.text).toContain('anytime 型')
+    expect(anytimeResult.text).toContain('只有 deadline 型')
+    const plainResult = await run('todo p 3')
+    expect(plainResult.kind).toBe('error')
+    expect(plainResult.text).toContain('普通待办')
+    const sleepResult = await run('todo p 4')
+    expect(sleepResult.kind).toBe('error')
+    expect(sleepResult.text).toContain('sleep 型')
+    // 文件未被改动
+    const file = await readFile(join(cpWs, daily), 'utf8')
+    expect(file).toContain('- [ ] (ml:anytime medium) 整理收藏夹')
+    expect(file).toContain('- [ ] 手写的普通待办')
+    expect(file).toContain('- [ ] (ml:sleep 2026-12-01 low) 学内部源码')
+  })
+
+  it('p 5 超上限 → 文法层报错；文件不变', async () => {
+    await resetFile()
+    const result = await run('todo p 1 99999')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('最多')
+    expect(await readFile(join(cpWs, daily), 'utf8')).toContain('2026-09-10')
+  })
+
+  it('普通待办也能 c（[-] 形态）', async () => {
+    await resetFile()
+    await run('todo list')
+    const result = await run('todo c 3')
+    expect(result.kind).toBe('success')
+    const file = await readFile(join(cpWs, daily), 'utf8')
+    expect(file).toContain('- [-] 手写的普通待办')
+    const undone = await run('todo u')
+    expect(undone.kind).toBe('success')
+    expect(await readFile(join(cpWs, daily), 'utf8')).toContain('- [ ] 手写的普通待办')
   })
 })
 

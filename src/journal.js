@@ -17,6 +17,8 @@ import {
   renderJournalTemplate,
   replaceLine,
   toggleTodoLine,
+  cancelTodoLine,
+  postponeTodoLine,
   weekLabel,
   weeklyFileName,
 } from './core/journal.js'
@@ -183,6 +185,7 @@ export async function wakeupSleepingTodos(cwd, items, today) {
   const due = items.filter(
     (item) =>
       item.done !== true &&
+      item.cancelled !== true &&
       item.meta !== null &&
       item.meta.type === 'sleep' &&
       typeof item.meta.date === 'string' &&
@@ -233,6 +236,7 @@ export async function toggleTodoAt(cwd, file, line, today) {
   } catch (error) {
     throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
+  const preRaw = content.split('\n')[line - 1]
   const result = toggleTodoLine(content, line, today)
   const raw = result.content.split('\n')[line - 1]
   try {
@@ -240,22 +244,19 @@ export async function toggleTodoAt(cwd, file, line, today) {
   } catch (error) {
     throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  return { done: result.done, raw }
+  return { done: result.done, preRaw, raw }
 }
 
 /**
- * 撤销一次切换：把指定行翻回 d 之前的状态（完成日期一并清除）。以 d 完成时
- * 捕获的行内容（postRaw）做严格校验 —— 行在 d 之后被外部修改则拒绝撤销。
+ * 切换工作区内某文件某行的待办取消态（结构化行取消时写入 cancelled:<today>）。
  *
  * @param {string} cwd
- * @param {string} file
- * @param {number} line
- * @param {string} postRaw d 之后该行的内容（toggleTodoAt 返回的 raw）
- * @param {string} today yyyy-mm-dd（若翻回完成态所需的时间戳；翻回未完成则忽略）
- * @returns {Promise<{ done: boolean }>} 撤销后的完成态
+ * @param {string} file 工作区相对路径
+ * @param {number} line 1 起始行号
+ * @param {string} today yyyy-mm-dd（取消日期戳）
+ * @returns {Promise<{ cancelled: boolean, raw: string }>} 切换后的取消态与该行新内容（撤销校验用）
  */
-export async function undoTodoAt(cwd, file, line, postRaw, today) {
-  const flipped = toggleTodoLine(postRaw, 1, today) // 单行内容翻回另一态
+export async function cancelTodoAt(cwd, file, line, today) {
   const path = join(cwd, file)
   let content
   try {
@@ -263,11 +264,68 @@ export async function undoTodoAt(cwd, file, line, postRaw, today) {
   } catch (error) {
     throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  const next = replaceLine(content, line, postRaw, flipped.content)
+  const preRaw = content.split('\n')[line - 1]
+  const result = cancelTodoLine(content, line, today)
+  try {
+    await writeFile(path, result.content, 'utf8')
+  } catch (error) {
+    throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  return { cancelled: result.cancelled, preRaw, raw: result.raw }
+}
+
+/**
+ * 延期工作区内某文件某行的 deadline 待办（截止日 + days 天）。
+ *
+ * @param {string} cwd
+ * @param {string} file 工作区相对路径
+ * @param {number} line 1 起始行号
+ * @param {number} days 延期天数（正整数）
+ * @returns {Promise<{ date: string, previousDate: string, raw: string }>} 新/旧截止日与该行新内容
+ */
+export async function postponeTodoAt(cwd, file, line, days) {
+  const path = join(cwd, file)
+  let content
+  try {
+    content = await readFile(path, 'utf8')
+  } catch (error) {
+    throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  const preRaw = content.split('\n')[line - 1]
+  const result = postponeTodoLine(content, line, days)
+  try {
+    await writeFile(path, result.content, 'utf8')
+  } catch (error) {
+    throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  return { date: result.date, previousDate: result.previousDate, preRaw, raw: result.raw }
+}
+
+/**
+ * 通用撤销（d 完成 / c 取消 / p 延期共用）：把指定行恢复为操作前的原文。
+ * 以操作完成时捕获的行内容（expectedRaw）做严格校验——行在操作之后被
+ * 外部修改则拒绝撤销（防把别人的改动抹掉）。
+ *
+ * @param {string} cwd
+ * @param {string} file
+ * @param {number} line
+ * @param {string} expectedRaw 操作后该行的内容（各 *At 返回的 raw）
+ * @param {string} restoreRaw 操作前该行的内容（撤销目标）
+ * @returns {Promise<{ raw: string }>} 恢复后的行内容
+ */
+export async function restoreTodoAt(cwd, file, line, expectedRaw, restoreRaw) {
+  const path = join(cwd, file)
+  let content
+  try {
+    content = await readFile(path, 'utf8')
+  } catch (error) {
+    throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  const next = replaceLine(content, line, expectedRaw, restoreRaw)
   try {
     await writeFile(path, next, 'utf8')
   } catch (error) {
     throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  return { done: flipped.done }
+  return { raw: restoreRaw }
 }

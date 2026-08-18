@@ -3,7 +3,7 @@
  *
  * 匹配（单行，遵循用户给出的 V1 定义「形如 - [ ] xxxxx 的单行文本」）：
  *   - 列表标记 `-` / `*` / `+`（允许少量缩进）
- *   - 紧跟 `[ ]`、`[x]`、`[X]`
+ *   - 紧跟 `[ ]`、`[x]`、`[X]`、`[-]`（`[-]` = 已取消，/ml todo c 写入）
  *   - 后跟非空正文
  * 空复选框（`- [ ]` 后无正文）视为噪音，不匹配。
  *
@@ -14,11 +14,12 @@
  */
 
 /** 匹配一行 Markdown 任务列表项。 */
-const MARKDOWN_CHECKBOX_PATTERN = /^[ \t]*(?:[-*+])[ \t]+\[([ xX])][ \t]+(\S.*)$/
+const MARKDOWN_CHECKBOX_PATTERN = /^[ \t]*(?:[-*+])[ \t]+\[([ xX-])][ \t]+(\S.*)$/
 
 /**
  * @typedef {object} TodoFormatMatch
  * @property {boolean} done
+ * @property {boolean} [cancelled] `[-]` 行为 true（普通格式无此标记时缺省 false）
  * @property {string} text 已 trim 的正文
  * @property {string} raw 原始行
  */
@@ -33,7 +34,7 @@ const MARKDOWN_CHECKBOX_PATTERN = /^[ \t]*(?:[-*+])[ \t]+\[([ xX])][ \t]+(\S.*)$
 /** @satisfies {TodoFormat} */
 export const markdownCheckboxFormat = Object.freeze({
   id: 'markdown-checkbox',
-  title: 'Markdown 任务列表（- [ ] / - [x]）',
+  title: 'Markdown 任务列表（- [ ] / - [x] / - [-]）',
   /**
    * @param {string} line
    * @returns {TodoFormatMatch | null}
@@ -41,8 +42,10 @@ export const markdownCheckboxFormat = Object.freeze({
   parse(line) {
     const match = MARKDOWN_CHECKBOX_PATTERN.exec(line)
     if (match === null) return null
+    const mark = match[1]
     return Object.freeze({
-      done: match[1] !== ' ',
+      done: mark === 'x' || mark === 'X',
+      cancelled: mark === '-',
       text: match[2].trim(),
       raw: line,
     })

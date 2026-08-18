@@ -15,7 +15,7 @@
  * @module dsh-memoryleak/core/journal
  */
 import { invariant, TodoError } from './errors.js'
-import { toggleStructuredTodoLine } from './formats/memoryleak-todo.js'
+import { cancelStructuredTodoLine, postponeStructuredTodoLine, toggleStructuredTodoLine } from './formats/memoryleak-todo.js'
 
 /** 两位补零。 */
 function pad2(value) {
@@ -215,13 +215,13 @@ function withFinalNewline(lines) {
   return `${lines.join('\n')}\n`
 }
 
-/** 待办复选框行的匹配与翻转。 */
-const CHECKBOX_LINE = /^([ \t]*(?:[-*+])[ \t]+)\[([ xX])](\s.*)$/
+/** 待办复选框行的匹配与翻转（mark：空格未完成 / x 完成 / - 取消）。 */
+const CHECKBOX_LINE = /^([ \t]*(?:[-*+])[ \t]+)\[([ xX-])](\s.*)$/
 
 /**
  * 切换指定行待办的完成态（纯函数；保留原文其余部分与换行形态）。
  * 结构化行（memoryleak-todo 格式）走专用切换：完成时写入 done:<today>，
- * 取消完成时清除；普通复选框行只翻转 [ ]/[x]。
+ * 取消完成时清除；普通复选框行只翻转 [ ]/[x]。已取消行抛错（先 c 恢复）。
  *
  * @param {string} content 文件内容
  * @param {number} lineNumber 1 起始行号
@@ -241,9 +241,62 @@ export function toggleTodoLine(content, lineNumber, today) {
   }
   const match = CHECKBOX_LINE.exec(lines[index])
   if (match === null) throw new TodoError(`第 ${lineNumber} 行不是待办复选框行：${lines[index].slice(0, 40)}`)
+  if (match[2] === '-') throw new TodoError(`第 ${lineNumber} 行的待办已取消——先用 /ml todo c 恢复，再标记完成`)
   const nextDone = match[2] === ' '
   lines[index] = `${match[1]}[${nextDone ? 'x' : ' '}]${match[3]}`
   return { content: lines.join('\n'), done: nextDone }
+}
+
+/**
+ * 切换指定行待办的取消态（纯函数，/ml todo c）：`[ ]`↔`[-]`。
+ * 结构化行走专用切换（写/清 cancelled:<today>）；普通复选框行翻转 mark。
+ * 已完成行抛错（完成与取消互斥）。
+ *
+ * @param {string} content 文件内容
+ * @param {number} lineNumber 1 起始行号
+ * @param {string} today yyyy-mm-dd（取消时写入的日期）
+ * @returns {{ content: string, cancelled: boolean, raw: string }} 新内容、切换后的取消态与该行新内容
+ */
+export function cancelTodoLine(content, lineNumber, today) {
+  invariant(typeof content === 'string', 'cancelTodoLine 需要 string 内容')
+  invariant(Number.isInteger(lineNumber) && lineNumber >= 1, `cancelTodoLine 需要正行号（收到 ${String(lineNumber)}）`)
+  const lines = content.split('\n')
+  const index = lineNumber - 1
+  if (index >= lines.length) throw new TodoError(`第 ${lineNumber} 行超出文件范围`)
+  const structured = cancelStructuredTodoLine(lines[index], today)
+  if (structured !== null) {
+    lines[index] = structured.line
+    return { content: lines.join('\n'), cancelled: structured.cancelled, raw: structured.line }
+  }
+  const match = CHECKBOX_LINE.exec(lines[index])
+  if (match === null) throw new TodoError(`第 ${lineNumber} 行不是待办复选框行：${lines[index].slice(0, 40)}`)
+  if (match[2] !== ' ' && match[2] !== '-') throw new TodoError(`第 ${lineNumber} 行的待办已完成，不能取消——需要先 /ml todo d 切回未完成`)
+  const nextCancelled = match[2] === ' '
+  lines[index] = `${match[1]}[${nextCancelled ? '-' : ' '}]${match[3]}`
+  return { content: lines.join('\n'), cancelled: nextCancelled, raw: lines[index] }
+}
+
+/**
+ * 延期指定行的 deadline 待办（纯函数，/ml todo p）：截止日 + days 天。
+ * 只有结构化 deadline 行有效；普通行抛错（无日期可延）。
+ *
+ * @param {string} content 文件内容
+ * @param {number} lineNumber 1 起始行号
+ * @param {number} days 延期天数（正整数）
+ * @returns {{ content: string, date: string, previousDate: string, raw: string }} 新内容、新/旧截止日与该行新内容
+ */
+export function postponeTodoLine(content, lineNumber, days) {
+  invariant(typeof content === 'string', 'postponeTodoLine 需要 string 内容')
+  invariant(Number.isInteger(lineNumber) && lineNumber >= 1, `postponeTodoLine 需要正行号（收到 ${String(lineNumber)}）`)
+  const lines = content.split('\n')
+  const index = lineNumber - 1
+  if (index >= lines.length) throw new TodoError(`第 ${lineNumber} 行超出文件范围`)
+  const structured = postponeStructuredTodoLine(lines[index], days)
+  if (structured === null) {
+    throw new TodoError('普通待办没有截止日，无法延期——需要日期请删掉重建成 deadline 型（/ml todo add）')
+  }
+  lines[index] = structured.line
+  return { content: lines.join('\n'), date: structured.date, previousDate: structured.previousDate, raw: structured.line }
 }
 
 /**

@@ -79,6 +79,21 @@ describe('TodoQuery（Specification）', () => {
     expect(() => createTodoQuery({ status: 'ANY' })).toThrow(/status/)
     expect(() => createTodoQuery({ limit: 0 })).toThrow(/limit/)
     expect(() => createTodoQuery({ limit: 1.5 })).toThrow(/limit/)
-    expect(TODO_STATUSES).toEqual(['open', 'done', 'all'])
+    expect(TODO_STATUSES).toEqual(['open', 'done', 'cancelled', 'all'])
+  })
+
+  it('cancelled 状态：open 隐藏已取消、cancelled 只看已取消', () => {
+    const items = [
+      createTodoItem({ file: 'a.md', line: 1, text: '未完成', done: false, format: 'markdown-checkbox' }),
+      createTodoItem({ file: 'a.md', line: 2, text: '已完成', done: true, format: 'markdown-checkbox' }),
+      createTodoItem({ file: 'a.md', line: 3, text: '已取消', done: false, cancelled: true, format: 'markdown-checkbox' }),
+    ]
+    const open = applyTodoQuery(createTodoQuery({ status: 'open' }), items)
+    expect(open.items.map((item) => item.text)).toEqual(['未完成'])
+    const cancelled = applyTodoQuery(createTodoQuery({ status: 'cancelled' }), items)
+    expect(cancelled.items.map((item) => item.text)).toEqual(['已取消'])
+    const all = applyTodoQuery(createTodoQuery({ status: 'all' }), items)
+    expect(all.items).toHaveLength(3)
+    expect(() => createTodoItem({ file: 'a.md', line: 9, text: '矛盾', done: true, cancelled: true, format: 'x' })).toThrow(/同时完成与取消/)
   })
 })

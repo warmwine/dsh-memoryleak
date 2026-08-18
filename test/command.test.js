@@ -54,10 +54,12 @@ describe('parseMlArgs（/ml 文法）', () => {
         '/ml <文本>',
         '/ml todo add <待办内容>',
         '/ml todo n',
-        '/ml todo list [all|open|done] [关键词]',
+        '/ml todo list [all|open|done|cancelled] [关键词]',
         '/ml todo l',
         '/ml todo d <序号>',
         '/ml todo u',
+        '/ml todo c <序号>',
+        '/ml todo p <序号> [天数]',
         '/ml note',
         '/ml view',
         '/ml v',
@@ -66,7 +68,7 @@ describe('parseMlArgs（/ml 文法）', () => {
         expect(help).toContain(fragment)
       }
       // 帮助里不该出现未实现的命令
-      expect(help).not.toMatch(/\/ml todo (?!add|list|n|l|d|u|done|undo)\w+/)
+      expect(help).not.toMatch(/\/ml todo (?!add|list|n|l|d|u|c|p|done|undo|cancel|postpone)\w+/)
     })
 
     it('init：严格无参数（Vault 设置的唯一入口）', () => {
@@ -95,6 +97,27 @@ describe('parseMlArgs（/ml 文法）', () => {
       expect(() => parseMlArgs('note 的过程还是不会显示')).toThrow(/想对助手说话/)
       expect(parseMlArgs('notebook 记事本')).toEqual({ family: 'journal', text: 'notebook 记事本' })
     })
+
+    it('todo c / cancel：取消待办（序号寻址，同 d）', () => {
+      expect(parseMlArgs('todo c 3')).toEqual({ family: 'todo', action: 'cancel', n: 3 })
+      expect(parseMlArgs('todo cancel 12')).toEqual({ family: 'todo', action: 'cancel', n: 12 })
+      expect(() => parseMlArgs('todo c')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('todo c x')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('todo c 0')).toThrow(TodoUsageError)
+    })
+
+    it('todo p / postpone：延期 deadline（序号 + 可选天数，缺省 1）', () => {
+      expect(parseMlArgs('todo p 5')).toEqual({ family: 'todo', action: 'postpone', n: 5, days: 1 })
+      expect(parseMlArgs('todo p 5 3')).toEqual({ family: 'todo', action: 'postpone', n: 5, days: 3 })
+      expect(parseMlArgs('todo postpone 2 30')).toEqual({ family: 'todo', action: 'postpone', n: 2, days: 30 })
+      expect(() => parseMlArgs('todo p')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('todo p x')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('todo p 5 x')).toThrow(/延期天数/)
+      expect(() => parseMlArgs('todo p 5 0')).toThrow(/延期天数/)
+      expect(() => parseMlArgs('todo p 5 -1')).toThrow(TodoUsageError) // 负号不是数字 token → 序号/天数解析失败
+      expect(() => parseMlArgs('todo p 5 3 9')).toThrow(/一个可选天数/)
+      expect(() => parseMlArgs('todo p 5 99999')).toThrow(/最多/)
+    })
   })
 
   describe('journal 家族（/ml <文本>）', () => {
@@ -118,7 +141,7 @@ describe('parseMlArgs（/ml 文法）', () => {
   })
 
   it('用法文案覆盖全部入口', () => {
-    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo u', '/ml note', '/ml view', '/ml help']) {
+    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo c', '/ml todo p', '/ml todo u', '/ml note', '/ml view', '/ml help']) {
       expect(ML_USAGE).toContain(fragment)
     }
   })

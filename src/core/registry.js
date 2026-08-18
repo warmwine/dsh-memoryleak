@@ -98,6 +98,7 @@ export class TodoFormatRegistry {
       }
       return Object.freeze({
         done: match.done,
+        cancelled: match.cancelled === true,
         text: match.text.trim(),
         raw: typeof match.raw === 'string' ? match.raw : line,
         meta: match.meta === null || match.meta === undefined ? null : Object.freeze({ ...match.meta }),

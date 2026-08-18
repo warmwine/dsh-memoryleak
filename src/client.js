@@ -16,6 +16,7 @@ window.__ModuleLoader__.load({
     const STATUS_OPTIONS = [
       ["open", "未完成"],
       ["done", "已完成"],
+      ["cancelled", "已取消"],
       ["all", "全部"],
     ];
 
@@ -337,7 +338,7 @@ window.__ModuleLoader__.load({
        两段。正文自然换行并与自身左对齐 —— 悬挂缩进的 CSS 等价实现（宿主
        文本无法预知客户端换行宽度，纯空格缩进在 pre-wrap 下不可对齐）。
        宿主输出的纯文本格式保持不变，TUI/纯文本环境仍是原排版。 */
-    const TODO_ITEM_LINE = /^\s*(\d+)\.\s*([☐☑])(?:\s+(\[[^\]]+\]))?\s*(.*)$/;
+    const TODO_ITEM_LINE = /^\s*(\d+)\.\s*([☐☑☒])(?:\s+(\[[^\]]+\]))?\s*(.*)$/;
 
     function MlTodoListBody({ text, cardStyle }) {
       const lines = String(text).split("\n");
@@ -356,7 +357,9 @@ window.__ModuleLoader__.load({
         const glyph = match[2];
         const badge = match[3];
         const content = match[4];
+        // 已完成（☑）与已取消（☒）都置灰；完成的加删除线，取消的只置灰
         const done = glyph === "☑";
+        const cancelled = glyph === "☒";
         return React.createElement("div", {
           key: index,
           style: { display: "flex", alignItems: "flex-start", gap: "8px" },
@@ -370,7 +373,7 @@ window.__ModuleLoader__.load({
               minWidth: 0,
               whiteSpace: "pre-wrap",
               overflowWrap: "break-word",
-              color: done ? "var(--dsw-alias-label-tertiary)" : "var(--dsw-alias-label-primary)",
+              color: done || cancelled ? "var(--dsw-alias-label-tertiary)" : "var(--dsw-alias-label-primary)",
               textDecoration: done ? "line-through" : "none",
             },
           }, content === "" ? " " : content));

@@ -3,6 +3,10 @@ import {
   memoryleakTodoFormat,
   buildStructuredTodoLine,
   toggleStructuredTodoLine,
+  cancelStructuredTodoLine,
+  postponeStructuredTodoLine,
+  addDaysToDate,
+  MAX_POSTPONE_DAYS,
   isValidTodoMeta,
   TODO_TYPES,
   TODO_PRIORITIES,
@@ -11,19 +15,22 @@ import { createDefaultRegistry } from '../src/core/registry.js'
 
 describe('memoryleak-todo 策略（解析）', () => {
   it.each([
-    ['- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿', { done: false, type: 'deadline', date: '2026-09-01', prio: 'urgent', doneAt: null, text: '完成设计稿' }],
-    ['- [x] (ml:sleep 2026-12-01 low) 学一遍内部源码', { done: true, type: 'sleep', date: '2026-12-01', prio: 'low', doneAt: null, text: '学一遍内部源码' }],
-    ['- [x] (ml:anytime medium done:2026-08-16) 整理收藏夹', { done: true, type: 'anytime', date: null, prio: 'medium', doneAt: '2026-08-16', text: '整理收藏夹' }],
-    ['- [x] (ml:deadline 2026-09-01 urgent done:2026-08-15) 完成设计稿', { done: true, type: 'deadline', date: '2026-09-01', prio: 'urgent', doneAt: '2026-08-15', text: '完成设计稿' }],
-    ['- [x] (ml:active low done:2026-08-16) 复盘上线', { done: true, type: 'active', date: null, prio: 'low', doneAt: '2026-08-16', text: '复盘上线' }],
-    ['- [ ] (ml:anytime medium) 整理收藏夹', { done: false, type: 'anytime', date: null, prio: 'medium', doneAt: null, text: '整理收藏夹' }],
-    ['* [ ] (ml:anytime urgent) 星号列表也可以', { done: false, type: 'anytime', date: null, prio: 'urgent', doneAt: null, text: '星号列表也可以' }],
+    ['- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿', { done: false, cancelled: false, type: 'deadline', date: '2026-09-01', prio: 'urgent', doneAt: null, cancelledAt: null, text: '完成设计稿' }],
+    ['- [x] (ml:sleep 2026-12-01 low) 学一遍内部源码', { done: true, cancelled: false, type: 'sleep', date: '2026-12-01', prio: 'low', doneAt: null, cancelledAt: null, text: '学一遍内部源码' }],
+    ['- [x] (ml:anytime medium done:2026-08-16) 整理收藏夹', { done: true, cancelled: false, type: 'anytime', date: null, prio: 'medium', doneAt: '2026-08-16', cancelledAt: null, text: '整理收藏夹' }],
+    ['- [x] (ml:deadline 2026-09-01 urgent done:2026-08-15) 完成设计稿', { done: true, cancelled: false, type: 'deadline', date: '2026-09-01', prio: 'urgent', doneAt: '2026-08-15', cancelledAt: null, text: '完成设计稿' }],
+    ['- [x] (ml:active low done:2026-08-16) 复盘上线', { done: true, cancelled: false, type: 'active', date: null, prio: 'low', doneAt: '2026-08-16', cancelledAt: null, text: '复盘上线' }],
+    ['- [ ] (ml:anytime medium) 整理收藏夹', { done: false, cancelled: false, type: 'anytime', date: null, prio: 'medium', doneAt: null, cancelledAt: null, text: '整理收藏夹' }],
+    ['* [ ] (ml:anytime urgent) 星号列表也可以', { done: false, cancelled: false, type: 'anytime', date: null, prio: 'urgent', doneAt: null, cancelledAt: null, text: '星号列表也可以' }],
+    ['- [-] (ml:deadline 2026-09-01 urgent cancelled:2026-08-18) 放弃的稿子', { done: false, cancelled: true, type: 'deadline', date: '2026-09-01', prio: 'urgent', doneAt: null, cancelledAt: '2026-08-18', text: '放弃的稿子' }],
+    ['- [-] (ml:anytime low) 手写取消无日期也认', { done: false, cancelled: true, type: 'anytime', date: null, prio: 'low', doneAt: null, cancelledAt: null, text: '手写取消无日期也认' }],
   ])('%s → %j', (line, expected) => {
     const match = memoryleakTodoFormat.parse(line)
     expect(match).not.toBeNull()
     expect(match.done).toBe(expected.done)
+    expect(match.cancelled).toBe(expected.cancelled)
     expect(match.text).toBe(expected.text)
-    expect(match.meta).toEqual({ type: expected.type, date: expected.date, prio: expected.prio, doneAt: expected.doneAt })
+    expect(match.meta).toEqual({ type: expected.type, date: expected.date, prio: expected.prio, doneAt: expected.doneAt, cancelledAt: expected.cancelledAt })
     expect(Object.isFrozen(match.meta)).toBe(true)
   })
 
@@ -37,6 +44,9 @@ describe('memoryleak-todo 策略（解析）', () => {
     ['- [x] (ml:anytime medium done:2026/08/16) 完成日格式错', '完成日格式'],
     ['- [ ] ml:deadline 2026-09-01 low 没有括号', '没有属性块括号'],
     ['- [ ] 普通待办', '普通行'],
+    ['- [ ] (ml:anytime low cancelled:2026-08-18) 未取消却带取消日', 'cancelled 只属于 [-] 行'],
+    ['- [x] (ml:anytime low done:2026-08-16 cancelled:2026-08-17) 完成又取消', 'done 与 cancelled 互斥'],
+    ['- [-] (ml:anytime low done:2026-08-16) 取消行带完成日', '[-] 不带 done:'],
   ])('%s 不匹配（%s）', (line) => {
     expect(memoryleakTodoFormat.parse(line)).toBeNull()
   })
@@ -98,8 +108,62 @@ describe('memoryleak-todo 策略（构造）', () => {
     expect(back).toEqual({ line: open, done: false })
     // 非结构化行
     expect(toggleStructuredTodoLine('- [ ] 普通待办', today)).toBeNull()
+    // 已取消行不能标记完成
+    const cancelled = '- [-] (ml:deadline 2026-09-01 urgent cancelled:2026-08-15) 放弃'
+    expect(() => toggleStructuredTodoLine(cancelled, today)).toThrow(/已取消/)
     // 非法 today
     expect(() => toggleStructuredTodoLine(open, '2026/08/16')).toThrow(/today/)
+  })
+
+  it('cancelStructuredTodoLine：取消写 [-]+cancelled:戳、恢复清除、互斥校验', () => {
+    const today = '2026-08-18'
+    const open = '- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿'
+    const cancelled = cancelStructuredTodoLine(open, today)
+    expect(cancelled).toEqual({ line: `- [-] (ml:deadline 2026-09-01 urgent cancelled:${today}) 完成设计稿`, cancelled: true })
+    // 再切 → 恢复原状
+    const back = cancelStructuredTodoLine(cancelled.line, today)
+    expect(back).toEqual({ line: open, cancelled: false })
+    // 已完成行拒绝
+    const done = '- [x] (ml:anytime low done:2026-08-16) 已完成项'
+    expect(() => cancelStructuredTodoLine(done, today)).toThrow(/已完成/)
+    // 非结构化行返回 null
+    expect(cancelStructuredTodoLine('- [ ] 普通待办', today)).toBeNull()
+    // 非法 today
+    expect(() => cancelStructuredTodoLine(open, 'bad')).toThrow(/today/)
+  })
+
+  describe('postponeStructuredTodoLine（/ml todo p）', () => {
+    const open = '- [ ] (ml:deadline 2026-09-01 urgent) 完成设计稿'
+    it('deadline 延 N 天：重写日期、保留其余', () => {
+      const result = postponeStructuredTodoLine(open, 3)
+      expect(result).toEqual({ line: '- [ ] (ml:deadline 2026-09-04 urgent) 完成设计稿', date: '2026-09-04', previousDate: '2026-09-01' })
+    })
+    it('跨月/跨年边界', () => {
+      expect(postponeStructuredTodoLine('- [ ] (ml:deadline 2026-01-31 low) 月末', 1).date).toBe('2026-02-01')
+      expect(postponeStructuredTodoLine('- [ ] (ml:deadline 2026-02-28 low) 平年二月', 1).date).toBe('2026-03-01')
+      expect(postponeStructuredTodoLine('- [ ] (ml:deadline 2024-02-28 low) 闰年二月', 1).date).toBe('2024-02-29')
+      expect(postponeStructuredTodoLine('- [ ] (ml:deadline 2026-12-31 low) 年末', 1).date).toBe('2027-01-01')
+    })
+    it('非 deadline 型抛错（sleep/anytime/active）', () => {
+      expect(() => postponeStructuredTodoLine('- [ ] (ml:sleep 2026-12-01 low) 睡', 1)).toThrow(/只有 deadline/)
+      expect(() => postponeStructuredTodoLine('- [ ] (ml:anytime low) 随', 1)).toThrow(/只有 deadline/)
+    })
+    it('已完成/已取消行抛错；非结构化返回 null；天数非法抛错', () => {
+      expect(() => postponeStructuredTodoLine('- [x] (ml:deadline 2026-09-01 low done:2026-08-01) 完', 1)).toThrow(/已完成/)
+      expect(() => postponeStructuredTodoLine('- [-] (ml:deadline 2026-09-01 low cancelled:2026-08-01) 弃', 1)).toThrow(/已取消/)
+      expect(postponeStructuredTodoLine('- [ ] 普通待办', 1)).toBeNull()
+      expect(() => postponeStructuredTodoLine(open, 0)).toThrow(/天数/)
+      expect(() => postponeStructuredTodoLine(open, -1)).toThrow(/天数/)
+      expect(() => postponeStructuredTodoLine(open, MAX_POSTPONE_DAYS + 1)).toThrow(/天数/)
+    })
+  })
+
+  it('addDaysToDate：UTC 计算（不受本地时区影响）、闰年', () => {
+    expect(addDaysToDate('2026-08-18', 1)).toBe('2026-08-19')
+    expect(addDaysToDate('2026-12-31', 1)).toBe('2027-01-01')
+    expect(addDaysToDate('2024-02-28', 1)).toBe('2024-02-29')
+    expect(() => addDaysToDate('bad', 1)).toThrow(/yyyy-mm-dd/)
+    expect(() => addDaysToDate('2026-08-18', 0)).toThrow(/天数/)
   })
 
   it('常量与 meta 校验', () => {
@@ -112,6 +176,8 @@ describe('memoryleak-todo 策略（构造）', () => {
     expect(isValidTodoMeta({ type: 'active', date: null, prio: 'low', doneAt: 'bad' })).toBe(false)
     expect(isValidTodoMeta({ type: 'sleep', date: 'bad', prio: 'low' })).toBe(false)
     expect(isValidTodoMeta({ type: 'nope', date: null, prio: 'low' })).toBe(false)
+    expect(isValidTodoMeta({ type: 'deadline', date: '2026-09-01', prio: 'low', cancelledAt: '2026-08-18' })).toBe(true)
+    expect(isValidTodoMeta({ type: 'deadline', date: '2026-09-01', prio: 'low', cancelledAt: 'bad' })).toBe(false)
   })
 })
 

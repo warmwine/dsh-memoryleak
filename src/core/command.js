@@ -23,8 +23,9 @@
  */
 import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
+import { MAX_POSTPONE_DAYS } from './formats/memoryleak-todo.js'
 
-export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号> · /ml todo u · /ml note · /ml view [文件名片段] · /ml help'
+export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done|cancelled] [关键词] · /ml todo d <序号> · /ml todo c <序号> · /ml todo p <序号> [天数] · /ml todo u · /ml note · /ml view [文件名片段] · /ml help'
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
@@ -44,6 +45,10 @@ export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /m
  *   family: 'todo', action: 'list', status: import('./filter.js').TodoStatus | null, text: string | null
  * } | {
  *   family: 'todo', action: 'toggle', n: number
+ * } | {
+ *   family: 'todo', action: 'cancel', n: number
+ * } | {
+ *   family: 'todo', action: 'postpone', n: number, days: number
  * } | {
  *   family: 'todo', action: 'undo'
  * }}
@@ -96,8 +101,34 @@ export function parseMlArgs(rawInput) {
     }
     return { family: 'todo', action: 'toggle', n }
   }
+  if (action === 'c' || action === 'cancel') {
+    const token = rest[0]
+    const n = token !== undefined && /^\d+$/.test(token) ? Number(token) : NaN
+    if (!Number.isInteger(n) || n < 1) {
+      throw new TodoUsageError('用法：/ml todo c <序号>（取消/恢复该待办；序号来自最近一次 /ml todo l 的输出）')
+    }
+    return { family: 'todo', action: 'cancel', n }
+  }
+  if (action === 'p' || action === 'postpone') {
+    const [seqToken, daysToken] = rest
+    const n = seqToken !== undefined && /^\d+$/.test(seqToken) ? Number(seqToken) : NaN
+    if (!Number.isInteger(n) || n < 1) {
+      throw new TodoUsageError('用法：/ml todo p <序号> [天数]（截止日往后延；不填天数 = 延 1 天；只对 deadline 型有效）')
+    }
+    if (daysToken !== undefined && rest.length > 2) {
+      throw new TodoUsageError('用法：/ml todo p <序号> [天数]（只接受一个可选天数参数）')
+    }
+    const days = daysToken === undefined ? 1 : /^\d+$/.test(daysToken) ? Number(daysToken) : NaN
+    if (!Number.isInteger(days) || days < 1) {
+      throw new TodoUsageError(`延期天数必须是正整数（收到 "${daysToken ?? ''}"）。用法：/ml todo p <序号> [天数]`)
+    }
+    if (days > MAX_POSTPONE_DAYS) {
+      throw new TodoUsageError(`延期天数一次最多 ${MAX_POSTPONE_DAYS} 天（收到 ${days}）——要延更久请直接改文件里的日期`)
+    }
+    return { family: 'todo', action: 'postpone', n, days }
+  }
   if (action === 'u' || action === 'undo') {
-    if (rest.length > 0) throw new TodoUsageError('用法：/ml todo u（撤销最近一次 d，不带参数）')
+    if (rest.length > 0) throw new TodoUsageError('用法：/ml todo u（撤销最近一次 d/c/p，不带参数）')
     return { family: 'todo', action: 'undo' }
   }
   if (action !== undefined && action !== 'list' && action !== 'l') {
@@ -129,13 +160,19 @@ export function renderMlHelp() {
     '/ml todo add <待办内容>（简写 /ml todo n）',
     '  新增结构化待办：固定表单选类型 deadline/sleep/anytime 与重要程度',
     '  紧急/中等/低（deadline/sleep 再问日期），写入 ## Todo 模块',
-    '/ml todo list [all|open|done] [关键词]（简写 /ml todo l；省略操作同为 list）',
-    '  列出待办：默认隐藏未唤醒的 sleep（到日自动唤醒并转写 active）；',
-    '  条目带序号，供 d 寻址',
+    '/ml todo list [all|open|done|cancelled] [关键词]（简写 /ml todo l；省略操作同为 list）',
+    '  列出待办：默认隐藏未唤醒的 sleep（到日自动唤醒并转写 active）与',
+    '  已取消项（cancelled 过滤词可单看）；条目带序号，供 d/c/p 寻址',
     '/ml todo d <序号>（全称 /ml todo done）',
     '  切换最近一次列表中该条目的完成态（需先 list）',
+    '/ml todo c <序号>（全称 /ml todo cancel）',
+    '  取消该待办：复选框变 [-] 并记 cancelled:日期；再执行一次恢复。',
+    '  已取消项从默认列表隐藏，u 可撤销',
+    '/ml todo p <序号> [天数]（全称 /ml todo postpone）',
+    '  延期 deadline 型待办：截止日往后推 N 天（不填 = 1 天）；',
+    '  sleep/anytime/普通待办不支持，u 可撤销',
     '/ml todo u（全称 /ml todo undo）',
-    '  撤销最近一次 d，可连续撤销（LIFO）',
+    '  撤销最近一次 d / c / p，可连续撤销（LIFO）',
     '/ml note',
     '  用当前模型把「上一个 /ml note 之后 → 现在」的对话（没有则整个会话）',
     '  压缩成：工作记录（日志 ## NOTE）+ 知识文件（MOMENTO/）+ 结构化登记',

@@ -10,9 +10,9 @@
 import { invariant, TodoError } from './errors.js'
 
 /** 合法的状态过滤词。 */
-export const TODO_STATUSES = Object.freeze(['open', 'done', 'all'])
+export const TODO_STATUSES = Object.freeze(['open', 'done', 'cancelled', 'all'])
 
-/** @typedef {'open' | 'done' | 'all'} TodoStatus */
+/** @typedef {'open' | 'done' | 'cancelled' | 'all'} TodoStatus */
 
 /** @typedef {import('./todo-item.js').TodoItem} TodoItem */
 
@@ -30,7 +30,8 @@ export const TODO_STATUSES = Object.freeze(['open', 'done', 'all'])
 /** 状态规格。 */
 function statusSpec(status) {
   if (status === 'all') return () => true
-  if (status === 'open') return (item) => item.done !== true
+  if (status === 'open') return (item) => item.done !== true && item.cancelled !== true
+  if (status === 'cancelled') return (item) => item.cancelled === true
   return (item) => item.done === true
 }
 

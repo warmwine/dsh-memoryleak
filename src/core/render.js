@@ -21,13 +21,14 @@
 import { invariant } from './errors.js'
 import { applyTodoQuery, createTodoQuery } from './filter.js'
 
-const STATUS_LABEL = Object.freeze({ open: '未完成', done: '已完成', all: '全部' })
+const STATUS_LABEL = Object.freeze({ open: '未完成', done: '已完成', cancelled: '已取消', all: '全部' })
 
 /** TUI 排版字符（等宽环境安全；右边界不封口——CJK 宽度无法对齐右框）。 */
 const RULE = '─'.repeat(44)
 const FILE_BULLET = '■'
 const GLYPH_OPEN = '☐'
 const GLYPH_DONE = '☑'
+const GLYPH_CANCELLED = '☒'
 const WARN = '⚠'
 const WOKE = '☀'
 
@@ -35,14 +36,16 @@ const WOKE = '☀'
 const TYPE_LABEL = Object.freeze({ deadline: '截止', sleep: '睡到', anytime: '随时', active: '唤醒' })
 const PRIO_LABEL = Object.freeze({ urgent: '紧急', medium: '中等', low: '低' })
 
-function metaBadge(meta, done = false) {
+function metaBadge(meta, done = false, cancelled = false) {
   if (meta === null || meta === undefined) return ''
   const type = TYPE_LABEL[meta.type] ?? meta.type
   const prio = PRIO_LABEL[meta.prio] ?? meta.prio
   const date = typeof meta.date === 'string' && meta.date !== '' ? ` ${meta.date}` : ''
   // 完成日期（/ml todo d 写入）：仅已完成行显示
   const doneAt = done === true && typeof meta.doneAt === 'string' && meta.doneAt !== '' ? ` ✓${meta.doneAt}` : ''
-  return ` [${type}${date}·${prio}${doneAt}]`
+  // 取消日期（/ml todo c 写入）：仅已取消行显示
+  const cancelledAt = cancelled === true && typeof meta.cancelledAt === 'string' && meta.cancelledAt !== '' ? ` ✗${meta.cancelledAt}` : ''
+  return ` [${type}${date}·${prio}${doneAt}${cancelledAt}]`
 }
 
 /** 结果是否不完整：查询截断或扫描截断都算。 */
@@ -53,11 +56,14 @@ function isTruncated(applied, report) {
 /** 首行摘要（单行，供折叠卡片显示）。 */
 export function summarizeTodoReport(report, query = createTodoQuery()) {
   const applied = applyTodoQuery(query, report.items)
-  const openCount = applied.items.filter((item) => item.done !== true).length
-  const doneCount = applied.items.length - openCount
+  const openCount = applied.items.filter((item) => item.done !== true && item.cancelled !== true).length
+  const cancelledCount = applied.items.filter((item) => item.cancelled === true).length
+  const doneCount = applied.items.length - openCount - cancelledCount
   const head =
     `待办 ${applied.items.length} 条` +
-    (query.status === 'all' ? `（未完成 ${openCount} / 已完成 ${doneCount}）` : `（${STATUS_LABEL[query.status]}）`)
+    (query.status === 'all'
+      ? `（未完成 ${openCount} / 已完成 ${doneCount}${cancelledCount > 0 ? ` / 已取消 ${cancelledCount}` : ''}）`
+      : `（${STATUS_LABEL[query.status]}）`)
   const tail = ` · ${report.files.matched} 个文件`
   return head + tail + (isTruncated(applied, report) ? ' · 已截断' : '')
 }
@@ -86,9 +92,9 @@ export function renderTodoText(report, query = createTodoQuery()) {
         lines.push(`${FILE_BULLET} ${item.file} · ${perFile.get(item.file)} 条`)
       }
       displayId += 1
-      const glyph = item.done ? GLYPH_DONE : GLYPH_OPEN
+      const glyph = item.done ? GLYPH_DONE : item.cancelled === true ? GLYPH_CANCELLED : GLYPH_OPEN
       const idColumn = `${String(displayId).padStart(3)}.`
-      lines.push(`${idColumn} ${glyph}${metaBadge(item.meta, item.done)} ${item.text}`)
+      lines.push(`${idColumn} ${glyph}${metaBadge(item.meta, item.done, item.cancelled === true)} ${item.text}`)
     }
   }
   if (report.wokenCount > 0) lines.push(RULE, `${WOKE} 已唤醒 ${report.wokenCount} 条 sleep 待办（转写为 active）`)
@@ -127,8 +133,9 @@ export function renderTodoJson(report, query = createTodoQuery()) {
   return {
     summary: {
       total: applied.items.length,
-      open: applied.items.filter((item) => item.done !== true).length,
+      open: applied.items.filter((item) => item.done !== true && item.cancelled !== true).length,
       done: applied.items.filter((item) => item.done === true).length,
+      cancelled: applied.items.filter((item) => item.cancelled === true).length,
       files: report.files.matched,
       truncated: isTruncated(applied, report),
     },

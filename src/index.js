@@ -32,7 +32,7 @@ import { parseMlArgs, renderMlHelp } from './core/command.js'
 import { applyTodoQuery, createTodoQuery } from './core/filter.js'
 import { renderTodoText } from './core/render.js'
 import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from './core/errors.js'
-import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt, readJournalFile, listWorkspaceFiles, readWorkspaceFile } from './journal.js'
+import { wakeupSleepingTodos, toggleTodoAt, cancelTodoAt, postponeTodoAt, restoreTodoAt, readJournalFile, listWorkspaceFiles, readWorkspaceFile } from './journal.js'
 import { resolveViewTarget } from './core/fuzzy.js'
 import { prepareVaultDir, resolveEffectiveSettings, writeVaultSettingsFile, VAULT_SETTINGS_FILENAME } from './vault.js'
 import { runNoteCommand, NoteLlmError } from './note.js'
@@ -170,8 +170,14 @@ export function apply(ctx) {
     if (parsed.action === 'toggle') {
       return toggleTodoByNumber(agent, cwd, parsed.n)
     }
+    if (parsed.action === 'cancel') {
+      return cancelTodoByNumber(agent, cwd, parsed.n)
+    }
+    if (parsed.action === 'postpone') {
+      return postponeTodoByNumber(agent, cwd, parsed.n, parsed.days)
+    }
     if (parsed.action === 'undo') {
-      return undoLastToggle(agent, cwd)
+      return undoLastOperation(agent, cwd)
     }
     const today = formatDate(new Date())
     const query = createTodoQuery({
@@ -183,7 +189,7 @@ export function apply(ctx) {
     const scanner = createTodoScanner({ registry, fileSource, limits: createScanLimits(settings) })
     let report = await scanner.scan(cwd, settings, signal)
 
-    // 唤醒遍历：到日的 sleep 落盘转写为 active，再以转写后的 meta 呈现
+    // 唤醒遍历：到日、未完成、未取消的 sleep 落盘转写为 active，再以转写后的 meta 呈现
     const { woken, failures } = await wakeupSleepingTodos(cwd, report.items, today)
     if (woken > 0 || failures.length > 0) {
       report = Object.freeze({
@@ -191,7 +197,7 @@ export function apply(ctx) {
         wokenCount: woken,
         items: Object.freeze(
           report.items.map((item) =>
-            item.meta !== null && item.meta.type === 'sleep' && item.done !== true &&
+            item.meta !== null && item.meta.type === 'sleep' && item.done !== true && item.cancelled !== true &&
             typeof item.meta.date === 'string' && item.meta.date <= today && item.raw !== null
               ? Object.freeze({ ...item, meta: Object.freeze({ type: 'active', date: null, prio: item.meta.prio }) })
               : item,
@@ -205,16 +211,31 @@ export function apply(ctx) {
     return { kind: 'success', text: renderTodoText(report, query) }
   }
 
-  /** /ml todo d <n>：按最近一次 list 的序号切换完成态（成功后入撤销栈）。 */
-  async function toggleTodoByNumber(agent, cwd, n) {
+  /** 寻址最近一次 list 的第 n 条（序号合法性 + 行原始内容）。 */
+  function itemAt(agent, n) {
     const list = lastListByAgent.get(agentIdOf(agent))
     if (list === undefined || list.length === 0) {
-      return { kind: 'error', text: '还没有可寻址的待办列表 —— 请先执行 /ml todo list。' }
+      return { error: '还没有可寻址的待办列表 —— 请先执行 /ml todo list。' }
     }
     if (n > list.length) {
-      return { kind: 'error', text: `序号超出范围：最近一次列表共 ${list.length} 条（收到 ${n}）。请重新 /ml todo list。` }
+      return { error: `序号超出范围：最近一次列表共 ${list.length} 条（收到 ${n}）。请重新 /ml todo list。` }
     }
-    const item = list[n - 1]
+    return { item: list[n - 1] }
+  }
+
+  /** 操作入撤销栈（d/c/p 共用：preRaw = 操作那一刻文件里的行，postRaw = 操作后的行）。 */
+  function pushUndo(agent, item, n, action, preRaw, postRaw) {
+    if (typeof preRaw !== 'string' || typeof postRaw !== 'string') return
+    const key = agentIdOf(agent)
+    if (!undoStackByAgent.has(key)) undoStackByAgent.set(key, [])
+    undoStackByAgent.get(key).push({ file: item.file, line: item.line, preRaw, postRaw, n, text: item.text, action })
+  }
+
+  /** /ml todo d <n>：按最近一次 list 的序号切换完成态。 */
+  async function toggleTodoByNumber(agent, cwd, n) {
+    const located = itemAt(agent, n)
+    if (located.error !== undefined) return { kind: 'error', text: located.error }
+    const item = located.item
     const today = formatDate(new Date())
     let result
     try {
@@ -223,29 +244,81 @@ export function apply(ctx) {
       if (error instanceof TodoError) return { kind: 'error', text: `切换失败：${error.message}` }
       throw error
     }
-    const key = agentIdOf(agent)
-    if (!undoStackByAgent.has(key)) undoStackByAgent.set(key, [])
-    undoStackByAgent.get(key).push({ file: item.file, line: item.line, postRaw: result.raw, n, text: item.text })
+    pushUndo(agent, item, n, 'done', result.preRaw, result.raw)
     const state = result.done ? `已完成 ☑（完成于 ${today}）` : '未完成 ☐'
     return { kind: 'success', text: `#${n} → ${state} ${item.text}\n（${item.file}:${item.line}）` }
   }
 
-  /** /ml todo u：撤销最近一次 d（LIFO，可连续）。 */
-  async function undoLastToggle(agent, cwd) {
-    const stack = undoStackByAgent.get(agentIdOf(agent))
-    if (stack === undefined || stack.length === 0) {
-      return { kind: 'error', text: '没有可撤销的操作 —— 请先 /ml todo d <序号>。' }
+  /** /ml todo c <n>：取消/恢复该待办（[-] + cancelled:日期；再执行一次恢复）。 */
+  async function cancelTodoByNumber(agent, cwd, n) {
+    const located = itemAt(agent, n)
+    if (located.error !== undefined) return { kind: 'error', text: located.error }
+    const item = located.item
+    if (item.done === true) {
+      return { kind: 'error', text: `#${n} 已完成，不能取消——需要先 /ml todo d ${n} 切回未完成。\n${item.text}` }
     }
-    const entry = stack.pop()
+    const today = formatDate(new Date())
     let result
     try {
-      result = await undoTodoAt(cwd, entry.file, entry.line, entry.postRaw, formatDate(new Date()))
+      result = await cancelTodoAt(cwd, item.file, item.line, today)
+    } catch (error) {
+      if (error instanceof TodoError) return { kind: 'error', text: `取消失败：${error.message}` }
+      throw error
+    }
+    pushUndo(agent, item, n, 'cancel', result.preRaw, result.raw)
+    const state = result.cancelled ? `已取消 ☒（取消于 ${today}，从默认列表隐藏；/ml todo l cancelled 可单看）` : '已恢复 ☐'
+    return { kind: 'success', text: `#${n} → ${state} ${item.text}\n（${item.file}:${item.line}）` }
+  }
+
+  /** /ml todo p <n> [days]：延期 deadline 待办（截止日 +days 天）。 */
+  async function postponeTodoByNumber(agent, cwd, n, days) {
+    const located = itemAt(agent, n)
+    if (located.error !== undefined) return { kind: 'error', text: located.error }
+    const item = located.item
+    if (item.done === true) {
+      return { kind: 'error', text: `#${n} 已完成，延期无意义——先 /ml todo d ${n} 切回未完成。\n${item.text}` }
+    }
+    if (item.cancelled === true) {
+      return { kind: 'error', text: `#${n} 已取消，延期无意义——先 /ml todo c ${n} 恢复。\n${item.text}` }
+    }
+    if (item.meta === null || item.meta.type !== 'deadline') {
+      const kindLabel = item.meta === null ? '普通待办（无类型标记）' : `${item.meta.type} 型`
+      return { kind: 'error', text: `#${n} 是 ${kindLabel}，不能延期——只有 deadline 型有截止日可延。\n${item.text}` }
+    }
+    let result
+    try {
+      result = await postponeTodoAt(cwd, item.file, item.line, days)
+    } catch (error) {
+      if (error instanceof TodoError) return { kind: 'error', text: `延期失败：${error.message}` }
+      throw error
+    }
+    pushUndo(agent, item, n, 'postpone', result.preRaw, result.raw)
+    return {
+      kind: 'success',
+      text: `#${n} 截止日 ${result.previousDate} → ${result.date}（延 ${days} 天）${item.text}\n（${item.file}:${item.line}）`,
+    }
+  }
+
+  /** /ml todo u：撤销最近一次 d/c/p（LIFO，可连续）。 */
+  async function undoLastOperation(agent, cwd) {
+    const stack = undoStackByAgent.get(agentIdOf(agent))
+    if (stack === undefined || stack.length === 0) {
+      return { kind: 'error', text: '没有可撤销的操作 —— 请先 /ml todo d / c / p <序号>。' }
+    }
+    const entry = stack[stack.length - 1]
+    if (typeof entry.preRaw !== 'string' || typeof entry.postRaw !== 'string') {
+      stack.pop()
+      return { kind: 'error', text: '该操作的原始行未留存，无法撤销（不影响后续撤销）。' }
+    }
+    try {
+      await restoreTodoAt(cwd, entry.file, entry.line, entry.postRaw, entry.preRaw)
     } catch (error) {
       if (error instanceof TodoError) return { kind: 'error', text: `撤销失败：${error.message}` }
       throw error
     }
-    const state = result.done ? '已完成 ☑' : '未完成 ☐'
-    return { kind: 'success', text: `已撤销 #${entry.n} → ${state} ${entry.text}\n（${entry.file}:${entry.line}）` }
+    stack.pop()
+    const actionLabel = { done: '完成', cancel: '取消', postpone: '延期' }[entry.action] ?? '操作'
+    return { kind: 'success', text: `已撤销${actionLabel} → 恢复原样：${entry.text}\n（${entry.file}:${entry.line}）` }
   }
 
   /** agent → 稳定键（无 id 的调用降级为共享桶）。 */
