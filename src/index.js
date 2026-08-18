@@ -6,6 +6,7 @@
  *   2. 注册 `memoryleak` 设置命名空间（持久化到 ~/.dsh/settings.yaml）
  *   3. 暴露 /api/memoryleak/* JSON 路由（设置窗口的读写桥）
  *   4. 注册 /ml 命令（dsh-commands 人类命令面）：记录日志 + 待办列表
+ *      + /ml note（当前模型压缩区间对话 → MOMENTO/ 知识库 + 日志 ## NOTE）
  *
  * 所有副作用挂在自身 Fiber 上：settings 注册随插件停用自动回收，路由与命令
  * 用 ctx.effect 显式回收。故障分级遵循 docs/DEVELOPMENT.md §2：用法/环境错
@@ -34,6 +35,8 @@ import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from '
 import { wakeupSleepingTodos, toggleTodoAt, undoTodoAt, readJournalFile, listWorkspaceFiles, readWorkspaceFile } from './journal.js'
 import { resolveViewTarget } from './core/fuzzy.js'
 import { prepareVaultDir, resolveEffectiveSettings, writeVaultSettingsFile, VAULT_SETTINGS_FILENAME } from './vault.js'
+import { runNoteCommand, NoteLlmError } from './note.js'
+import { NoteParseError } from './core/note.js'
 
 /**
  * 稳定的 cordis 插件名（与 cordis.patch.yml 的 insert id 一致）。
@@ -54,9 +57,10 @@ const ML_VAULT_QUESTION_ID = 'ml-vault'
 
 /**
  * 硬依赖：webServer（API 路由）、commands（/ml）、settings（持久化设置 +
- * Vault 引导写入）。工作区定位不再依赖会话 —— 一切以设置的 Vault 为根。
+ * Vault 引导写入）、llm（/ml note 的压缩调用，与官方 compaction 同款依赖）。
+ * 工作区定位不再依赖会话 —— 一切以设置的 Vault 为根。
  */
-export const inject = ['webServer', 'commands', 'settings']
+export const inject = ['webServer', 'commands', 'settings', 'llm']
 
 export { createDefaultRegistry, createTodoScanner, createScanLimits }
 
@@ -95,7 +99,7 @@ export function apply(ctx) {
       ctx.commands.register({
         name: 'ml',
         description: 'MemoryLeak 记事本 · 输入 /ml help 查看全部命令',
-        input: { hint: '<文本> / todo 子命令 / view / help' },
+        input: { hint: '<文本> / todo 子命令 / note / view / help' },
         handler: wrappedHandler,
       }),
     'memoryleak: /ml command',
@@ -111,7 +115,7 @@ export function apply(ctx) {
    * @param {{ agent: { session?: { header?: { cwd?: string } } }, rawInput: string, signal: AbortSignal }} invocation
    * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
    */
-  async function mlCommandHandler({ agent, rawInput, signal }) {
+  async function mlCommandHandler({ commandId, agent, rawInput, signal }) {
     const parsed = parseMlArgs(rawInput)
     if (parsed.family === 'help') {
       return { kind: 'success', text: renderMlHelp() }
@@ -124,16 +128,19 @@ export function apply(ctx) {
       return { kind: 'error', text: '尚未设置 Vault 目录——先执行 /ml init 指定（或在 GUI 设置 → MemoryLeak 填写）。' }
     }
     const settings = await resolveEffectiveSettings(globalSettings)
-    return dispatchMlCommand({ agent, rawInput, signal, parsed, cwd: globalSettings.vault, settings })
+    return dispatchMlCommand({ agent, rawInput, signal, parsed, cwd: globalSettings.vault, settings, commandId })
   }
 
   /** vault 就绪后的实际分发（原命令处理器主体，cwd 即 vault）。 */
-  async function dispatchMlCommand({ agent, rawInput, signal, parsed, cwd, settings }) {
+  async function dispatchMlCommand({ agent, rawInput, signal, parsed, cwd, settings, commandId }) {
     if (parsed.family === 'journal') {
       const record = await recordJournalNote({ cwd, settings, text: parsed.text })
       const where = record.mode === 'weekly' ? `## MemoryLeak · ${record.date}` : '## MemoryLeak'
       const suffix = record.created ? '（新建文件）' : ''
       return { kind: 'success', text: `已记录 → ${record.file} ${where}${suffix}\n- ${record.note}` }
+    }
+    if (parsed.family === 'note') {
+      return runNoteCommand(ctx, agent, { commandId, signal }, cwd, settings)
     }
     if (parsed.family === 'view') {
       if (parsed.text === null) {
@@ -403,7 +410,9 @@ export function apply(ctx) {
       if (error instanceof TodoRootError) return { kind: 'error', text: `工作区目录不可用：${error.message}` }
       if (error instanceof TodoScanAbortedError) return { kind: 'error', text: '扫描已取消。' }
       if (error instanceof JournalIoError) return { kind: 'error', text: `日志写入失败：${error.message}` }
+      if (error instanceof NoteParseError) return { kind: 'error', text: `模型输出无法解析：${error.message}` }
+      if (error instanceof NoteLlmError) return { kind: 'error', text: `压缩调用失败：${error.message}` }
+      if (invocation.signal?.aborted) return { kind: 'error', text: '/ml note 已取消。' }
       throw error
     })
-  }
-}
+  }}

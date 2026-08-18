@@ -61,8 +61,8 @@ export async function recordTodoLine({ cwd, settings, todoLine, now = () => new 
   return { file: located.file, mode: located.mode, date: located.date, created: located.created }
 }
 
-/** 定位（必要时按模板新建内容）当前日志文件。 */
-async function locateJournal({ cwd, settings, now }) {
+/** 定位（必要时按模板新建内容）当前日志文件（/ml note 的 NOTE 落盘也复用）。 */
+export async function locateJournal({ cwd, settings, now }) {
   if (typeof cwd !== 'string' || cwd === '') throw new JournalIoError('工作区目录为空')
   const mode = settings.journalMode === 'weekly' ? 'weekly' : 'daily'
   const at = now()

@@ -167,12 +167,12 @@ describe('宿主插件装配（apply）', () => {
 
   it('声明稳定的插件名与硬依赖（inject 与代码实际访问的 ctx 服务一致）', async () => {
     expect(name).toBe('memoryleak')
-    expect(inject).toEqual(['webServer', 'commands', 'settings'])
+    expect(inject).toEqual(['webServer', 'commands', 'settings', 'llm'])
     // 回归：宿主源码里访问的每个 ctx.<service>（effect 除外）都必须出现在
     // inject 声明里 —— Guard 在属性访问时拦截，桩 ctx 无 Guard 测不出来。
     const hostSources = (
       await Promise.all(
-        ['src/index.js', 'src/routes.js'].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')),
+        ['src/index.js', 'src/routes.js', 'src/note.js'].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')),
       )
     ).join('\n')
     const accessed = new Set(hostSources.match(/\bctx\.\w+/g) ?? [])
@@ -194,7 +194,7 @@ describe('宿主插件装配（apply）', () => {
     expect(command).toBeDefined()
     // 注册描述保持短并导向 /ml help（汇总说明统一由 help 提供）
     expect(command.description).toBe('MemoryLeak 记事本 · 输入 /ml help 查看全部命令')
-    expect(command.input.hint).toBe('<文本> / todo 子命令 / view / help')
+    expect(command.input.hint).toBe('<文本> / todo 子命令 / note / view / help')
   })
 
   it('/ml help：返回汇总说明（无需工作区绑定）', async () => {
@@ -204,7 +204,7 @@ describe('宿主插件装配（apply）', () => {
       signal: new AbortController().signal,
     })
     expect(result.kind).toBe('success')
-    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo u', '/ml view', '/ml help']) {
+    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo u', '/ml note', '/ml view', '/ml help']) {
       expect(result.text).toContain(fragment)
     }
   })

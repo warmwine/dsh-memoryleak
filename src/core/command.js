@@ -1,18 +1,19 @@
 /**
  * /ml 命令文法（纯函数，独立测试）。
  *
- * V1 文法（五个家族）：
+ * V1 文法（六个家族）：
  *   /ml init                            → 指定/更换 Vault 目录（日志与待办的存放根）
  *   /ml <文本>                          → 记一笔：写入 Vault 日志/周志的 ## MemoryLeak
  *   /ml todo n|add <文本>               → 添加结构化待办（提问类型/优先级/日期）到 ## Todo
  *   /ml todo l|list [状态] [关键词]      → 列出 Vault Markdown 待办（默认隐藏未唤醒的 sleep）
  *   /ml todo d|done <n>                 → 切换最近一次 list 结果中第 n 条的完成态
  *   /ml todo u|undo                     → 撤销最近一次 d（可连续撤销，LIFO）
+ *   /ml note                            → 用当前模型压缩区间对话进 MOMENTO/ 与 ## NOTE
  *   /ml view|v [文件名片段]              → 显示当前日志/周志，或模糊匹配并显示指定文件
  *   /ml help|h                          → 命令一览（汇总说明）
  *
- * 家族判定：第一个词是 `init` / `todo` / `view` / `help` 即对应家族（保留字，
- * 记录文本以它们开头时请换措辞）；其余一切非空输入都是记录文本。
+ * 家族判定：第一个词是 `init` / `todo` / `note` / `view` / `help` 即对应家族
+ * （保留字，记录文本以它们开头时请换措辞）；其余一切非空输入都是记录文本。
  * Vault 未设置时，除 help / init 外的所有命令在分发层直接报错——init 是
  * 唯一的设置入口，不自动弹引导。
  * 状态默认值不在这里决定 —— 由设置命名空间的 defaultStatus 注入（查询模型
@@ -23,7 +24,7 @@
 import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
 
-export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号> · /ml todo u · /ml view [文件名片段] · /ml help'
+export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done] [关键词] · /ml todo d <序号> · /ml todo u · /ml note · /ml view [文件名片段] · /ml help'
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
@@ -33,6 +34,8 @@ export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /m
  *   family: 'journal', text: string
  * } | {
  *   family: 'help'
+ * } | {
+ *   family: 'note'
  * } | {
  *   family: 'view', text: string | null
  * } | {
@@ -65,6 +68,17 @@ export function parseMlArgs(rawInput) {
   if (family === 'view' || family === 'v') {
     const text = [action, ...rest].filter((token) => token !== undefined && token !== '').join(' ')
     return { family: 'view', text: text === '' ? null : text }
+  }
+  if (family === 'note') {
+    if (action !== undefined) {
+      throw new TodoUsageError([
+        '/ml note 不带参数——你跟在后面的文字没有发给助手，也不会被记录。',
+        '· 想整理对话：只输入 /ml note 回车',
+        '· 想记一笔：/ml <文本>',
+        '· 想对助手说话：去掉开头的 /ml note，直接发消息',
+      ].join('\n'))
+    }
+    return { family: 'note' }
   }
   if (family !== 'todo') {
     return { family: 'journal', text: tokens.join(' ') }
@@ -122,6 +136,11 @@ export function renderMlHelp() {
     '  切换最近一次列表中该条目的完成态（需先 list）',
     '/ml todo u（全称 /ml todo undo）',
     '  撤销最近一次 d，可连续撤销（LIFO）',
+    '/ml note',
+    '  用当前模型把「上一个 /ml note 之后 → 现在」的对话（没有则整个会话）',
+    '  压缩成：工作记录（日志 ## NOTE）+ 知识文件（MOMENTO/）+ 结构化登记',
+    '  （MOMENTO/databases.md、servers.md、credentials.md、glossary.md，',
+    '  表格格式由代码渲染；凭证只记位置，不记明文）',
     '/ml view [文件名片段]（简写 /ml v；无参数 = 当前日志/周志）',
     '  显示文件内容：片段按 VSCode Ctrl+P 风格模糊匹配工作区文件；',
     '  从命令菜单选择 /ml 则弹出快速打开面板（搜索/↑↓/Enter）',

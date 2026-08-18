@@ -24,6 +24,7 @@ export const MEMORYLEAK_SETTINGS_DEFAULTS = Object.freeze({
     '.dsh',
     '.hg',
     '.svn',
+    '.backup',
     'dist',
     'build',
     'out',

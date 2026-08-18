@@ -58,6 +58,7 @@ describe('parseMlArgs（/ml 文法）', () => {
         '/ml todo l',
         '/ml todo d <序号>',
         '/ml todo u',
+        '/ml note',
         '/ml view',
         '/ml v',
         '/ml help',
@@ -85,6 +86,15 @@ describe('parseMlArgs（/ml 文法）', () => {
       expect(parseMlArgs('v feb no')).toEqual({ family: 'view', text: 'feb no' })
       expect(parseMlArgs('v docs/plan')).toEqual({ family: 'view', text: 'docs/plan' })
     })
+
+    it('note：严格无参数（误带反馈文本时明确告知没有发出）', () => {
+      expect(parseMlArgs('note')).toEqual({ family: 'note' })
+      expect(parseMlArgs('  note  ')).toEqual({ family: 'note' })
+      expect(() => parseMlArgs('note new')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('note 会压缩这段话')).toThrow(/没有发给助手/)
+      expect(() => parseMlArgs('note 的过程还是不会显示')).toThrow(/想对助手说话/)
+      expect(parseMlArgs('notebook 记事本')).toEqual({ family: 'journal', text: 'notebook 记事本' })
+    })
   })
 
   describe('journal 家族（/ml <文本>）', () => {
@@ -93,7 +103,7 @@ describe('parseMlArgs（/ml 文法）', () => {
       ['  多余空格  压成单空格  ', '多余空格 压成单空格'],
       ['todos 是复数不算保留字', 'todos 是复数不算保留字'],
       ['list 现在是普通文本', 'list 现在是普通文本'],
-      ['note new', 'note new'],
+      ['notes 是普通文本（复数不保留）', 'notes 是普通文本（复数不保留）'],
       ['helps 是普通文本（复数不保留）', 'helps 是普通文本（复数不保留）'],
       ['views 是普通文本（复数不保留）', 'views 是普通文本（复数不保留）'],
     ])('%j → 记录 %j', (input, text) => {
@@ -108,7 +118,7 @@ describe('parseMlArgs（/ml 文法）', () => {
   })
 
   it('用法文案覆盖全部入口', () => {
-    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo u', '/ml view', '/ml help']) {
+    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo u', '/ml note', '/ml view', '/ml help']) {
       expect(ML_USAGE).toContain(fragment)
     }
   })

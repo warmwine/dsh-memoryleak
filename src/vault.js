@@ -23,6 +23,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, resolve } from 'node:path'
 import YAML from 'yaml'
 import { resolveMemoryleakSettings } from './settings-schema.js'
+import { NOTE_CONFIG_KEYS } from './core/note.js'
 
 /** vault 内设置文件名（相对 vault 根）。 */
 export const VAULT_SETTINGS_FILENAME = '.memoryleak.yaml'
@@ -71,7 +72,9 @@ export async function prepareVaultDir(input) {
 
 /**
  * 读 vault 内设置文件；缺失 / 解析失败 / 不是对象时返回 null（回退全局层）。
- * 只取 schema 认识的键，且忽略 vault 键本身（路径只住全局层）。
+ * 只取 schema 认识的键，且忽略 vault 键本身（路径只住全局层）；
+ * noteStructured / noteSkill 是 vault 限定键，走 readVaultNoteConfig，
+ * 不进设置合并链。
  *
  * @param {string} vaultDir vault 绝对路径
  * @returns {Promise<Record<string, unknown> | null>}
@@ -92,7 +95,7 @@ export async function readVaultSettings(vaultDir) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const section = {}
   for (const key of Object.keys(parsed)) {
-    if (key === 'vault') continue
+    if (key === 'vault' || NOTE_CONFIG_KEYS.includes(key)) continue
     if (parsed[key] !== null && parsed[key] !== undefined) section[key] = parsed[key]
   }
   return section
@@ -126,14 +129,59 @@ export async function resolveEffectiveSettings(globalSection) {
  * 语义 —— 全局与 vault 文件保持一致；vault 文件的价值是随目录迁移，
  * 而不是第三处可分叉的编辑入口（手改仍可读，但下次 GUI 保存会被覆盖）。
  *
+ * 例外：**vault 限定的 note 配置键**（noteStructured / noteSkill，见
+ * core/note.js 的 NOTE_CONFIG_KEYS）只住在 vault 文件里、不进全局设置
+ * schema；同步写入时从现有文件**原样保留**，不被覆盖清掉。
+ *
  * @param {string} vaultDir vault 绝对路径
  * @param {object} section 要写入的设置段（含 vault 键会被剔除）
  */
 export async function writeVaultSettingsFile(vaultDir, section) {
   const target = resolve(vaultDir, VAULT_SETTINGS_FILENAME)
   const { vault: _vault, ...rest } = section
-  const body = '# MemoryLeak vault 设置（与 GUI 保存同步；此文件的键覆盖 ~/.dsh/settings.yaml 的 memoryleak: 段，vault 路径除外）\n' + YAML.stringify(rest)
+  // vault 限定键：从现有文件带过来（GUI 保存不会冲掉 note 配置）
+  try {
+    const parsed = YAML.parse(await readFile(target, 'utf8'))
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const key of NOTE_CONFIG_KEYS) {
+        const value = parsed[key]
+        if (value !== null && value !== undefined) rest[key] = value
+      }
+    }
+  } catch {
+    // 现有文件缺失/损坏：无键可保留
+  }
+  const hasNoteKeys = Object.keys(rest).some((key) => NOTE_CONFIG_KEYS.includes(key))
+  const hint = hasNoteKeys
+    ? '# noteStructured / noteSkill / noteBackup 为 vault 限定配置（仅本文件有效，详见 README）；同步保存会原样保留\n'
+    : ''
+  const body = '# MemoryLeak vault 设置（与 GUI 保存同步；此文件的键覆盖 ~/.dsh/settings.yaml 的 memoryleak: 段，vault 路径除外）\n' + hint + YAML.stringify(rest)
   await writeFile(target, body, 'utf8')
+}
+
+/**
+ * 读 vault 限定的 note 配置（noteStructured / noteSkill / noteBackup）。
+ *
+ * 这三个键**只住在 vault 文件**：不进全局设置 schema，GUI 不展示，
+ * 手改即生效。读取失败 / 文件缺失 / 解析失败一律返回空（视为未配置，
+ * 用内置默认目标；配置校验在 core/note.js 的 resolveStructuredTargets）。
+ *
+ * @param {string} vaultDir vault 绝对路径
+ * @returns {Promise<{ noteStructured: unknown, noteSkill: string, noteBackup: boolean }>}
+ */
+export async function readVaultNoteConfig(vaultDir) {
+  const empty = { noteStructured: undefined, noteSkill: '', noteBackup: false }
+  try {
+    const parsed = YAML.parse(await readFile(resolve(vaultDir, VAULT_SETTINGS_FILENAME), 'utf8'))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return empty
+    return {
+      noteStructured: parsed.noteStructured,
+      noteSkill: typeof parsed.noteSkill === 'string' ? parsed.noteSkill.trim() : '',
+      noteBackup: parsed.noteBackup === true,
+    }
+  } catch {
+    return empty
+  }
 }
 
 function errorMessage(error) {
