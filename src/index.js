@@ -231,6 +231,19 @@ export function apply(ctx) {
     undoStackByAgent.get(key).push({ file: item.file, line: item.line, preRaw, postRaw, n, text: item.text, action })
   }
 
+  /** 操作成功后回写寻址表：更新该条目的 raw（与从新行推断的完成/取消态），
+   *  使后续 d/c/p/u 不必重新 list 也能继续寻址（relocate 的 expectedRaw 用）。 */
+  function refreshListItem(agent, n, raw) {
+    if (typeof raw !== 'string') return
+    const key = agentIdOf(agent)
+    const list = lastListByAgent.get(key)
+    if (list === undefined || n < 1 || n > list.length) return
+    const done = /^[ \t]*(?:[-*+])[ \t]+\[[xX]\]/.test(raw)
+    const cancelled = /^[ \t]*(?:[-*+])[ \t]+\[-\]/.test(raw)
+    // applyTodoQuery 返回的是冻结数组——重建一份再存
+    lastListByAgent.set(key, list.map((item, index) => (index === n - 1 ? Object.freeze({ ...item, done, cancelled, raw }) : item)))
+  }
+
   /** /ml todo d <n>：按最近一次 list 的序号切换完成态。 */
   async function toggleTodoByNumber(agent, cwd, n) {
     const located = itemAt(agent, n)
@@ -239,12 +252,13 @@ export function apply(ctx) {
     const today = formatDate(new Date())
     let result
     try {
-      result = await toggleTodoAt(cwd, item.file, item.line, today)
+      result = await toggleTodoAt(cwd, item.file, item.line, today, typeof item.raw === 'string' ? item.raw : undefined)
     } catch (error) {
       if (error instanceof TodoError) return { kind: 'error', text: `切换失败：${error.message}` }
       throw error
     }
     pushUndo(agent, item, n, 'done', result.preRaw, result.raw)
+    refreshListItem(agent, n, result.raw)
     const state = result.done ? `已完成 ☑（完成于 ${today}）` : '未完成 ☐'
     return { kind: 'success', text: `#${n} → ${state} ${item.text}\n（${item.file}:${item.line}）` }
   }
@@ -260,12 +274,13 @@ export function apply(ctx) {
     const today = formatDate(new Date())
     let result
     try {
-      result = await cancelTodoAt(cwd, item.file, item.line, today)
+      result = await cancelTodoAt(cwd, item.file, item.line, today, typeof item.raw === 'string' ? item.raw : undefined)
     } catch (error) {
       if (error instanceof TodoError) return { kind: 'error', text: `取消失败：${error.message}` }
       throw error
     }
     pushUndo(agent, item, n, 'cancel', result.preRaw, result.raw)
+    refreshListItem(agent, n, result.raw)
     const state = result.cancelled ? `已取消 ☒（取消于 ${today}，从默认列表隐藏；/ml todo l cancelled 可单看）` : '已恢复 ☐'
     return { kind: 'success', text: `#${n} → ${state} ${item.text}\n（${item.file}:${item.line}）` }
   }
@@ -287,12 +302,13 @@ export function apply(ctx) {
     }
     let result
     try {
-      result = await postponeTodoAt(cwd, item.file, item.line, days)
+      result = await postponeTodoAt(cwd, item.file, item.line, days, typeof item.raw === 'string' ? item.raw : undefined)
     } catch (error) {
       if (error instanceof TodoError) return { kind: 'error', text: `延期失败：${error.message}` }
       throw error
     }
     pushUndo(agent, item, n, 'postpone', result.preRaw, result.raw)
+    refreshListItem(agent, n, result.raw)
     return {
       kind: 'success',
       text: `#${n} 截止日 ${result.previousDate} → ${result.date}（延 ${days} 天）${item.text}\n（${item.file}:${item.line}）`,
@@ -317,6 +333,7 @@ export function apply(ctx) {
       throw error
     }
     stack.pop()
+    refreshListItem(agent, entry.n, entry.preRaw)
     const actionLabel = { done: '完成', cancel: '取消', postpone: '延期' }[entry.action] ?? '操作'
     return { kind: 'success', text: `已撤销${actionLabel} → 恢复原样：${entry.text}\n（${entry.file}:${entry.line}）` }
   }

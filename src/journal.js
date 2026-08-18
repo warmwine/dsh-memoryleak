@@ -220,15 +220,46 @@ export async function wakeupSleepingTodos(cwd, items, today) {
 }
 
 /**
+ * 行重定位（防错位）：list 到操作之间文件可能被外部改动（插行/删行/改行）。
+ * 校验与定位规则：
+ *   1. 原行号处内容仍等于 expectedRaw → 行没挪，直接用；
+ *   2. 否则在**同一文件**里找内容完全等于 expectedRaw 的行：
+ *      恰好一处 → 目标挪到了那里，用新行号；
+ *      零处（被改/被删）或多处（内容重复无法分辨）→ 抛错让用户重新 list。
+ *
+ * @param {string} file 工作区相对路径（错误信息用）
+ * @param {string[]} lines 文件按行拆分
+ * @param {number} line list 时的行号
+ * @param {string} expectedRaw list 时该行的原文（item.raw）
+ * @returns {number} 实际行号
+ * @throws {TodoError} 行被修改/删除或内容重复
+ */
+function relocateTodoLine(file, lines, line, expectedRaw) {
+  if (line >= 1 && line <= lines.length && lines[line - 1] === expectedRaw) return line
+  const matches = []
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index] === expectedRaw) matches.push(index + 1)
+  }
+  if (matches.length === 1) return matches[0]
+  if (matches.length === 0) {
+    throw new TodoError(`目标待办行已在 ${file} 中被修改或删除——请重新 /ml todo list 后再操作`)
+  }
+  throw new TodoError(`${file} 里有 ${matches.length} 行内容完全相同，无法确定操作目标——请重新 /ml todo list`)
+}
+
+/**
  * 切换工作区内某文件某行的待办完成态（结构化行完成时写入 done:<today>）。
+ * expectedRaw（list 时行原文）提供时做错位防护：行号处内容不符则按原文
+ * 全文唯一重定位（见 relocateTodoLine）。
  *
  * @param {string} cwd
  * @param {string} file 工作区相对路径
  * @param {number} line 1 起始行号
  * @param {string} today yyyy-mm-dd（完成日期戳）
- * @returns {Promise<{ done: boolean, raw: string }>} 切换后的完成态与该行新内容（撤销校验用）
+ * @param {string} [expectedRaw] list 时该行的原文（错位防护；缺省不校验）
+ * @returns {Promise<{ done: boolean, preRaw: string, raw: string }>} 切换后的完成态与操作前/后行内容
  */
-export async function toggleTodoAt(cwd, file, line, today) {
+export async function toggleTodoAt(cwd, file, line, today, expectedRaw) {
   const path = join(cwd, file)
   let content
   try {
@@ -236,9 +267,11 @@ export async function toggleTodoAt(cwd, file, line, today) {
   } catch (error) {
     throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  const preRaw = content.split('\n')[line - 1]
-  const result = toggleTodoLine(content, line, today)
-  const raw = result.content.split('\n')[line - 1]
+  const lines = content.split('\n')
+  const target = typeof expectedRaw === 'string' ? relocateTodoLine(file, lines, line, expectedRaw) : line
+  const preRaw = lines[target - 1]
+  const result = toggleTodoLine(content, target, today)
+  const raw = result.content.split('\n')[target - 1]
   try {
     await writeFile(path, result.content, 'utf8')
   } catch (error) {
@@ -249,14 +282,16 @@ export async function toggleTodoAt(cwd, file, line, today) {
 
 /**
  * 切换工作区内某文件某行的待办取消态（结构化行取消时写入 cancelled:<today>）。
+ * expectedRaw 语义同 toggleTodoAt。
  *
  * @param {string} cwd
  * @param {string} file 工作区相对路径
  * @param {number} line 1 起始行号
  * @param {string} today yyyy-mm-dd（取消日期戳）
- * @returns {Promise<{ cancelled: boolean, raw: string }>} 切换后的取消态与该行新内容（撤销校验用）
+ * @param {string} [expectedRaw] list 时该行的原文（错位防护；缺省不校验）
+ * @returns {Promise<{ cancelled: boolean, preRaw: string, raw: string }>} 切换后的取消态与操作前/后行内容
  */
-export async function cancelTodoAt(cwd, file, line, today) {
+export async function cancelTodoAt(cwd, file, line, today, expectedRaw) {
   const path = join(cwd, file)
   let content
   try {
@@ -264,8 +299,10 @@ export async function cancelTodoAt(cwd, file, line, today) {
   } catch (error) {
     throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  const preRaw = content.split('\n')[line - 1]
-  const result = cancelTodoLine(content, line, today)
+  const lines = content.split('\n')
+  const target = typeof expectedRaw === 'string' ? relocateTodoLine(file, lines, line, expectedRaw) : line
+  const preRaw = lines[target - 1]
+  const result = cancelTodoLine(content, target, today)
   try {
     await writeFile(path, result.content, 'utf8')
   } catch (error) {
@@ -276,14 +313,16 @@ export async function cancelTodoAt(cwd, file, line, today) {
 
 /**
  * 延期工作区内某文件某行的 deadline 待办（截止日 + days 天）。
+ * expectedRaw 语义同 toggleTodoAt。
  *
  * @param {string} cwd
  * @param {string} file 工作区相对路径
  * @param {number} line 1 起始行号
  * @param {number} days 延期天数（正整数）
- * @returns {Promise<{ date: string, previousDate: string, raw: string }>} 新/旧截止日与该行新内容
+ * @param {string} [expectedRaw] list 时该行的原文（错位防护；缺省不校验）
+ * @returns {Promise<{ date: string, previousDate: string, preRaw: string, raw: string }>} 新/旧截止日与操作前/后行内容
  */
-export async function postponeTodoAt(cwd, file, line, days) {
+export async function postponeTodoAt(cwd, file, line, days, expectedRaw) {
   const path = join(cwd, file)
   let content
   try {
@@ -291,8 +330,10 @@ export async function postponeTodoAt(cwd, file, line, days) {
   } catch (error) {
     throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  const preRaw = content.split('\n')[line - 1]
-  const result = postponeTodoLine(content, line, days)
+  const lines = content.split('\n')
+  const target = typeof expectedRaw === 'string' ? relocateTodoLine(file, lines, line, expectedRaw) : line
+  const preRaw = lines[target - 1]
+  const result = postponeTodoLine(content, target, days)
   try {
     await writeFile(path, result.content, 'utf8')
   } catch (error) {
@@ -303,8 +344,9 @@ export async function postponeTodoAt(cwd, file, line, days) {
 
 /**
  * 通用撤销（d 完成 / c 取消 / p 延期共用）：把指定行恢复为操作前的原文。
- * 以操作完成时捕获的行内容（expectedRaw）做严格校验——行在操作之后被
- * 外部修改则拒绝撤销（防把别人的改动抹掉）。
+ * 以操作完成时捕获的行内容（expectedRaw）做校验，且同样支持错位重定位
+ * （操作之后行挪动了也能撤销）；行内容已被外部修改则拒绝（防抹掉别人
+ * 的改动）。
  *
  * @param {string} cwd
  * @param {string} file
@@ -321,7 +363,9 @@ export async function restoreTodoAt(cwd, file, line, expectedRaw, restoreRaw) {
   } catch (error) {
     throw new JournalIoError(`读取 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
-  const next = replaceLine(content, line, expectedRaw, restoreRaw)
+  const lines = content.split('\n')
+  const target = relocateTodoLine(file, lines, line, expectedRaw)
+  const next = replaceLine(content, target, expectedRaw, restoreRaw)
   try {
     await writeFile(path, next, 'utf8')
   } catch (error) {

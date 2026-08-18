@@ -916,7 +916,7 @@ describe('/ml todo u 撤销（端到端）', () => {
     const result = await run('todo u')
     expect(result.kind).toBe('error')
     expect(result.text).toContain('撤销失败')
-    expect(result.text).toContain('已变化')
+    expect(result.text).toContain('被修改或删除')
   })
 
   it('连续 d 多次可连续 u（LIFO）', async () => {
@@ -1094,6 +1094,113 @@ describe('/ml todo c 取消 与 p 延期（端到端）', () => {
     const undone = await run('todo u')
     expect(undone.kind).toBe('success')
     expect(await readFile(join(cpWs, daily), 'utf8')).toContain('- [ ] 手写的普通待办')
+  })
+})
+
+describe('错位防护（list 后文件被外部改动，d/c/p/u 仍指向正确行）', () => {
+  const host = createFakeHost()
+  let command
+  let reWs
+  let daily
+
+  beforeAll(async () => {
+    apply(host.ctx)
+    command = host.commands.find((definition) => definition.name === 'ml')
+    reWs = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-relocate-'))
+    await host.settings.update('memoryleak', { vault: reWs })
+    daily = `${formatDate(new Date())}.md`
+  })
+
+  afterAll(async () => {
+    await rm(reWs, { recursive: true, force: true })
+  })
+
+  async function writeFileContent(content) {
+    await writeFile(join(reWs, daily), content)
+  }
+
+  const run = (rawInput) =>
+    command.handler({
+      agent: { id: 'agent-relocate-test', session: { header: { cwd: reWs } } },
+      rawInput,
+      signal: new AbortController().signal,
+    })
+
+  it('【回归】list 后上方插入两行 → d 1 仍改对行（行号已偏移）', async () => {
+    await writeFileContent('## Todo\n\n- [ ] (ml:deadline 2026-09-01 urgent) 目标任务\n- [ ] (ml:anytime low) 另一条\n')
+    await run('todo l all')
+    // 外部编辑：目标行上方插入两行
+    await writeFileContent('## Todo\n\n新插入的说明行\n再插一行\n- [ ] (ml:deadline 2026-09-01 urgent) 目标任务\n- [ ] (ml:anytime low) 另一条\n')
+    const result = await run('todo d 1')
+    expect(result.kind).toBe('success')
+    const today = formatDate(new Date())
+    const file = await readFile(join(reWs, daily), 'utf8')
+    expect(file).toContain(`- [x] (ml:deadline 2026-09-01 urgent done:${today}) 目标任务`)
+    expect(file).toContain('- [ ] (ml:anytime low) 另一条') // 邻行未误伤
+    expect(file).toContain('新插入的说明行')
+  })
+
+  it('【回归】list 后上方删除一行 → c 1 仍改对行', async () => {
+    await writeFileContent('## Todo\n\n将被删的行\n- [ ] (ml:anytime low) 目标任务\n')
+    await run('todo l all')
+    await writeFileContent('## Todo\n\n- [ ] (ml:anytime low) 目标任务\n')
+    const result = await run('todo c 1')
+    expect(result.kind).toBe('success')
+    expect(await readFile(join(reWs, daily), 'utf8')).toContain('- [-] (ml:anytime low cancelled:')
+  })
+
+  it('【回归】list 后目标行内容被改 → d 1 红字报错（不误伤）', async () => {
+    await writeFileContent('## Todo\n\n- [ ] (ml:deadline 2026-09-01 urgent) 原文本\n')
+    await run('todo l all')
+    await writeFileContent('## Todo\n\n- [ ] (ml:deadline 2026-09-05 urgent) 被手改了日期\n')
+    const result = await run('todo d 1')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('被修改或删除')
+    expect(result.text).toContain('/ml todo list')
+    // 文件不动
+    expect(await readFile(join(reWs, daily), 'utf8')).toContain('- [ ] (ml:deadline 2026-09-05 urgent) 被手改了日期')
+  })
+
+  it('【回归】行号失效且文件里两行内容完全相同 → 报错无法确定目标（不猜）', async () => {
+    await writeFileContent('## Todo\n\n- [ ] (ml:anytime low) 一模一样的任务\n- [ ] (ml:anytime low) 一模一样的任务\n')
+    await run('todo l all')
+    // 外部插行使原行号失效：第 1 条挪到了下面，且两行内容仍然相同
+    await writeFileContent('## Todo\n\n插进来的行\n- [ ] (ml:anytime low) 一模一样的任务\n- [ ] (ml:anytime low) 一模一样的任务\n')
+    const result = await run('todo d 1')
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('无法确定操作目标')
+    // 文件不动（两条都未被误改）
+    const file = await readFile(join(reWs, daily), 'utf8')
+    expect((file.match(/- \[ \] \(ml:anytime low\) 一模一样的任务/g) ?? []).length).toBe(2)
+  })
+
+  it('【回归】d 之后行被挪动 → u 仍能撤销（postRaw 重定位）', async () => {
+    await writeFileContent('## Todo\n\n- [ ] (ml:deadline 2026-09-01 urgent) 撤销目标\n')
+    await run('todo l all')
+    await run('todo d 1')
+    // 外部在完成行上方插行
+    const content = await readFile(join(reWs, daily), 'utf8')
+    await writeFileContent(content.replace('## Todo', '## Todo\n\n插进来的一行'))
+    const undone = await run('todo u')
+    expect(undone.kind).toBe('success')
+    const today = formatDate(new Date())
+    const file = await readFile(join(reWs, daily), 'utf8')
+    expect(file).toContain('- [ ] (ml:deadline 2026-09-01 urgent) 撤销目标')
+    expect(file).not.toContain(`done:${today}`)
+  })
+
+  it('【回归】连续 d d（不重新 list）→ 第二次仍成功；u 语义正确', async () => {
+    await writeFileContent('## Todo\n\n- [ ] (ml:anytime low) 连续操作\n')
+    await run('todo l all')
+    const first = await run('todo d 1')
+    expect(first.kind).toBe('success')
+    const second = await run('todo d 1') // 寻址表已回写，无需重新 list
+    expect(second.kind).toBe('success')
+    expect(second.text).toContain('未完成 ☐')
+    const undone = await run('todo u') // 撤销第二次 d → 回到已完成
+    expect(undone.kind).toBe('success')
+    const today = formatDate(new Date())
+    expect(await readFile(join(reWs, daily), 'utf8')).toContain(`- [x] (ml:anytime low done:${today}) 连续操作`)
   })
 })
 
