@@ -25,7 +25,7 @@ import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
 import { MAX_POSTPONE_DAYS } from './formats/memoryleak-todo.js'
 
-export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done|cancelled] [关键词] · /ml todo d <序号> · /ml todo c <序号> · /ml todo p <序号> [天数] · /ml todo u · /ml note · /ml view [文件名片段] · /ml help'
+export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done|cancelled] [关键词] · /ml todo d <序号> · /ml todo c <序号> · /ml todo p <序号> [天数] · /ml todo u · /ml note · /ml ask <问题> · /ml view [文件名片段] · /ml help'
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
@@ -37,6 +37,8 @@ export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /m
  *   family: 'help'
  * } | {
  *   family: 'note'
+ * } | {
+ *   family: 'ask', text: string
  * } | {
  *   family: 'view', text: string | null
  * } | {
@@ -85,12 +87,17 @@ export function parseMlArgs(rawInput) {
     }
     return { family: 'note' }
   }
+  if (family === 'ask') {
+    const text = [action, ...rest].filter((token) => token !== undefined && token !== '').join(' ')
+    if (text === '') throw new TodoUsageError('用法：/ml ask <问题>（拿 Vault 里的笔记当资料向当前模型提问）')
+    return { family: 'ask', text }
+  }
   if (family !== 'todo') {
     return { family: 'journal', text: tokens.join(' ') }
   }
-  if (action === 'add' || action === 'n') {
+  if (action === 'add' || action === 'n' || action === 'a') {
     const text = rest.join(' ')
-    if (text === '') throw new TodoUsageError('用法：/ml todo n <待办内容>（add 同义）')
+    if (text === '') throw new TodoUsageError('用法：/ml todo n <待办内容>（add / a 同义）')
     return { family: 'todo', action: 'add', text }
   }
   if (action === 'd' || action === 'done') {
@@ -157,9 +164,10 @@ export function renderMlHelp() {
     '  与系统对话框）。Vault 未设置时，其他命令都会提示先执行本命令',
     '/ml <文本>',
     '  记一笔：写入 Vault 日志/周志的 ## MemoryLeak 模块（无则按模板新建）',
-    '/ml todo add <待办内容>（简写 /ml todo n）',
+    '/ml todo add <待办内容>（简写 /ml todo n 或 /ml todo a）',
     '  新增结构化待办：固定表单选类型 deadline/sleep/anytime 与重要程度',
-    '  紧急/中等/低（deadline/sleep 再问日期），写入 ## Todo 模块',
+    '  紧急/中等/低（deadline/sleep 再问日期），写入 ## Todo 模块；',
+    '  表单支持键盘：数字键选类型、字母键选重要程度（如 u=紧急）',
     '/ml todo list [all|open|done|cancelled] [关键词]（简写 /ml todo l；省略操作同为 list）',
     '  列出待办：默认隐藏未唤醒的 sleep（到日自动唤醒并转写 active）与',
     '  已取消项（cancelled 过滤词可单看）；条目带序号，供 d/c/p 寻址',
@@ -178,6 +186,10 @@ export function renderMlHelp() {
     '  压缩成：工作记录（日志 ## NOTE）+ 知识文件（MOMENTO/）+ 结构化登记',
     '  （MOMENTO/databases.md、servers.md、credentials.md、glossary.md，',
     '  表格格式由代码渲染；凭证只记位置，不记明文）',
+    '/ml ask <问题>',
+    '  /ml note 的反向：把 Vault 当资料库向当前模型提问（只读，不写 Vault）。',
+    '  自动汇集 MOMENTO 知识文件 / 结构化登记 / 近期日志作上下文，',
+    '  按问题关键词挑最相关的资料，回答流式显示在会话里并标注来源文件',
     '/ml view [文件名片段]（简写 /ml v；无参数 = 当前日志/周志）',
     '  显示文件内容：片段按 VSCode Ctrl+P 风格模糊匹配工作区文件；',
     '  从命令菜单选择 /ml 则弹出快速打开面板（搜索/↑↓/Enter）',

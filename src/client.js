@@ -863,19 +863,6 @@ window.__ModuleLoader__.load({
         }
       });
 
-      // Esc 取消（capture 拦截，与实时候选卡同款；IME 组合中不拦）。
-      React.useEffect(() => {
-        if (busy) return undefined;
-        const onKey = (ev) => {
-          if (ev.key !== "Escape" || ev.isComposing === true) return;
-          ev.preventDefault();
-          ev.stopPropagation();
-          cancelWait();
-        };
-        document.addEventListener("keydown", onKey, true);
-        return () => document.removeEventListener("keydown", onKey, true);
-      });
-
       const shortcuts = [
         { key: "today", label: "今天", date: today },
         { key: "tomorrow", label: "明天", date: mlAddDays(today, 1) },
@@ -883,14 +870,43 @@ window.__ModuleLoader__.load({
         { key: "month", label: "本月", date: mlEndOfMonth(today) },
       ];
 
-      // 兜底：载体形态不符（理论上 select 已拦）不渲染 —— 让位通用 UI
-      // 兜底比渲染一个空壳更安全。放在全部 hook 之后，保证 hook 数稳定。
-      if (wait === null || typeof wait !== "object" || question === null || typeof question !== "object") return null;
-
       const shiftMonth = (delta) => setView((current) => {
         const next = new Date(current.year, current.month + delta, 1);
         return { year: next.getFullYear(), month: next.getMonth() };
       });
+
+      // 键盘：Esc 取消（capture 拦截；IME 组合中不拦）；数字 1-4 选快捷
+      // 日期（今天/明天/本周/本月）、←/→ 切月。焦点在文本输入类元素上时
+      // 只保留 Esc（不吞打字）。
+      React.useEffect(() => {
+        if (busy) return undefined;
+        const onKey = (ev) => {
+          if (ev.isComposing === true) return;
+          if (ev.key === "Escape") {
+            ev.preventDefault();
+            ev.stopPropagation();
+            cancelWait();
+            return;
+          }
+          const target = ev.target;
+          if (target !== null && typeof target === "object" && (
+            target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable === true
+          )) return;
+          if (/^[1-9]$/.test(ev.key)) {
+            const shortcut = shortcuts[Number(ev.key) - 1];
+            if (shortcut !== undefined) { ev.preventDefault(); answerWith(shortcut.date); }
+            return;
+          }
+          if (ev.key === "ArrowLeft") { ev.preventDefault(); shiftMonth(-1); return; }
+          if (ev.key === "ArrowRight") { ev.preventDefault(); shiftMonth(1); }
+        };
+        document.addEventListener("keydown", onKey, true);
+        return () => document.removeEventListener("keydown", onKey, true);
+      });
+
+      // 兜底：载体形态不符（理论上 select 已拦）不渲染 —— 让位通用 UI
+      // 兜底比渲染一个空壳更安全。放在全部 hook 之后，保证 hook 数稳定。
+      if (wait === null || typeof wait !== "object" || question === null || typeof question !== "object") return null;
 
       // 日历格：周一起始，含补位的天数（可点，免切月直接选邻月）。
       const firstOfMonth = new Date(view.year, view.month, 1);
@@ -951,12 +967,12 @@ window.__ModuleLoader__.load({
             }, "✕")),
           React.createElement("div", { style: ML_BODY_STYLE, "data-ml-date-scroll": true },
             React.createElement("div", { style: shortcutsStyle, role: "group", "aria-label": "快捷日期" },
-              shortcuts.map((shortcut) => React.createElement("button", {
+              shortcuts.map((shortcut, index) => React.createElement("button", {
                 key: shortcut.key, type: "button", style: shortcutStyle, className: "ml-date-shortcut",
                 disabled: busy, onClick: () => answerWith(shortcut.date),
-                title: mlIsoDate(shortcut.date),
+                title: mlIsoDate(shortcut.date) + "（快捷键 " + (index + 1) + "）",
               },
-                React.createElement("span", null, shortcut.label),
+                React.createElement("span", null, (index + 1) + " · " + shortcut.label),
                 React.createElement("span", { style: shortcutSubStyle }, mlShortDate(shortcut.date))))),
             React.createElement("div", { style: calendarStyle },
               React.createElement("div", { style: navStyle },
@@ -984,7 +1000,7 @@ window.__ModuleLoader__.load({
                 })))),
           React.createElement("footer", { style: ML_FOOTER_STYLE },
             React.createElement("span", { style: error !== null ? ML_ERROR_STYLE : ML_HINT_STYLE, role: "status" },
-              error !== null ? error : "点击日期即确认 · Esc 取消"),
+              error !== null ? error : "数字键选快捷日期 · ←→ 切月 · 点击日历选日 · Esc 取消"),
             React.createElement("button", {
               type: "button", style: ML_CANCEL_BTN_STYLE, className: "ml-date-cancel",
               disabled: busy, onClick: cancelWait,
@@ -1070,23 +1086,10 @@ window.__ModuleLoader__.load({
         }
       });
 
-      // Esc 取消（capture 拦截；IME 组合中不拦）。
-      React.useEffect(() => {
-        if (busy) return undefined;
-        const onKey = (ev) => {
-          if (ev.key !== "Escape" || ev.isComposing === true) return;
-          ev.preventDefault();
-          ev.stopPropagation();
-          cancelWait();
-        };
-        document.addEventListener("keydown", onKey, true);
-        return () => document.removeEventListener("keydown", onKey, true);
-      });
-
-      // 兜底：载体形态不符（理论上 select 已拦）不渲染。放在全部 hook
-      // 之后，保证 hook 数稳定。
-      if (wait === null || typeof wait !== "object" || typeQ === null || prioQ === null) return null;
-
+      // 选项与选择函数先于键盘 effect（effect 每次渲染重挂，闭包取最新值）。
+      const optionsOf = (q) => (Array.isArray(q.options) ? q.options.filter((o) => o !== null && typeof o === "object" && typeof o.label === "string") : []);
+      const typeOptions = typeQ === null ? [] : optionsOf(typeQ);
+      const prioOptions = prioQ === null ? [] : optionsOf(prioQ);
       const chooseType = (label) => {
         if (busy) return;
         if (prioLabel !== null) submit(label, prioLabel);
@@ -1098,9 +1101,42 @@ window.__ModuleLoader__.load({
         else { setPrioLabel(label); setError(null); }
       };
 
-      const optionsOf = (q) => (Array.isArray(q.options) ? q.options.filter((o) => o !== null && typeof o === "object" && typeof o.label === "string") : []);
-      const typeOptions = optionsOf(typeQ);
-      const prioOptions = optionsOf(prioQ);
+      // 键盘：Esc 取消（capture 拦截；IME 组合中不拦）；数字 1-9 选类型、
+      // 字母选重要程度（按选项 label 首字母派生，如 u=urgent / m=medium / l=low）；
+      // 焦点在文本输入类元素上时只保留 Esc（不吞打字）。
+      React.useEffect(() => {
+        if (busy) return undefined;
+        const onKey = (ev) => {
+          if (ev.isComposing === true) return;
+          if (ev.key === "Escape") {
+            ev.preventDefault();
+            ev.stopPropagation();
+            cancelWait();
+            return;
+          }
+          const target = ev.target;
+          if (target !== null && typeof target === "object" && (
+            target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable === true
+          )) return;
+          const key = ev.key.toLowerCase();
+          if (key.length !== 1) return;
+          if (/^[1-9]$/.test(key)) {
+            const option = typeOptions[Number(key) - 1];
+            if (option !== undefined) { ev.preventDefault(); chooseType(option.label); }
+            return;
+          }
+          if (/^[a-z]$/.test(key)) {
+            const option = prioOptions.find((o) => o.label.toLowerCase().startsWith(key));
+            if (option !== undefined) { ev.preventDefault(); choosePrio(option.label); }
+          }
+        };
+        document.addEventListener("keydown", onKey, true);
+        return () => document.removeEventListener("keydown", onKey, true);
+      });
+
+      // 兜底：载体形态不符（理论上 select 已拦）不渲染。放在全部 hook
+      // 之后，保证 hook 数稳定。
+      if (wait === null || typeof wait !== "object" || typeQ === null || prioQ === null) return null;
       if (typeOptions.length === 0 || prioOptions.length === 0) return null;
 
       const title = typeof typeQ.question === "string" && typeQ.question !== "" ? typeQ.question : "待办的类型？";
@@ -1129,6 +1165,11 @@ window.__ModuleLoader__.load({
         borderRadius: 12, padding: "5px 4px", color: "var(--dsw-alias-label-primary)",
       });
       const chipDescStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "14px" };
+      // 字母快捷键提示（label 首字母；urgent→u / medium→m / low→l）
+      const prioKeyOf = (label) => {
+        const first = label.toLowerCase().charAt(0);
+        return /^[a-z]$/.test(first) ? first : "";
+      };
 
       return React.createElement("div", { style: ML_FRAME_STYLE, "data-ml-intro-question": wait.key },
         React.createElement("section", { style: ML_CARD_STYLE, "aria-label": title },
@@ -1152,16 +1193,22 @@ window.__ModuleLoader__.load({
                 typeof option.description === "string" ? React.createElement("span", { style: rowDescStyle }, option.description) : null))),
             React.createElement("div", { style: groupLabelStyle }, prioTitle),
             React.createElement("div", { style: chipsStyle, role: "radiogroup", "aria-label": prioTitle },
-              prioOptions.map((option) => React.createElement("button", {
-                key: option.label, type: "button", style: chipStyle(option.label === prioLabel), className: "ml-intro-option",
-                role: "radio", "aria-checked": option.label === prioLabel, disabled: busy,
-                onClick: () => choosePrio(option.label),
-              },
-                React.createElement("span", { style: rowLabelStyle }, option.label),
-                typeof option.description === "string" ? React.createElement("span", { style: chipDescStyle }, option.description) : null)))),
+              prioOptions.map((option) => {
+                const keyHint = prioKeyOf(option.label);
+                return React.createElement("button", {
+                  key: option.label, type: "button", style: chipStyle(option.label === prioLabel), className: "ml-intro-option",
+                  role: "radio", "aria-checked": option.label === prioLabel, disabled: busy,
+                  onClick: () => choosePrio(option.label),
+                  title: keyHint !== "" ? "快捷键 " + keyHint : undefined,
+                },
+                  React.createElement("span", { style: rowLabelStyle },
+                    keyHint !== "" ? React.createElement("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, marginRight: 4 } }, keyHint) : null,
+                    option.label),
+                  typeof option.description === "string" ? React.createElement("span", { style: chipDescStyle }, option.description) : null);
+              }))),
           React.createElement("footer", { style: ML_FOOTER_STYLE },
             React.createElement("span", { style: error !== null ? ML_ERROR_STYLE : ML_HINT_STYLE, role: "status" },
-              error !== null ? error : "类型与重要程度各选一项，选完自动提交 · Esc 取消"),
+              error !== null ? error : "数字键选类型 · 字母键选重要程度（如 u=urgent）· 选完自动提交 · Esc 取消"),
             React.createElement("button", {
               type: "button", style: ML_CANCEL_BTN_STYLE, className: "ml-intro-cancel",
               disabled: busy, onClick: cancelWait,

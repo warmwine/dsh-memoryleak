@@ -20,8 +20,9 @@ describe('parseMlArgs（/ml 文法）', () => {
       expect(parseMlArgs(input)).toEqual(expected)
     })
 
-    it('n / add 别名：新增待办', () => {
+    it('n / a / add 别名：新增待办', () => {
       expect(parseMlArgs('todo n 修 bug')).toEqual({ family: 'todo', action: 'add', text: '修 bug' })
+      expect(parseMlArgs('todo a 修 bug')).toEqual({ family: 'todo', action: 'add', text: '修 bug' })
       expect(parseMlArgs('todo add 修 bug')).toEqual({ family: 'todo', action: 'add', text: '修 bug' })
       expect(() => parseMlArgs('todo n')).toThrow(TodoUsageError)
       expect(() => parseMlArgs('todo n')).toThrow(/\/ml todo n/)
@@ -61,6 +62,7 @@ describe('parseMlArgs（/ml 文法）', () => {
         '/ml todo c <序号>',
         '/ml todo p <序号> [天数]',
         '/ml note',
+        '/ml ask <问题>',
         '/ml view',
         '/ml v',
         '/ml help',
@@ -68,7 +70,7 @@ describe('parseMlArgs（/ml 文法）', () => {
         expect(help).toContain(fragment)
       }
       // 帮助里不该出现未实现的命令
-      expect(help).not.toMatch(/\/ml todo (?!add|list|n|l|d|u|c|p|done|undo|cancel|postpone)\w+/)
+      expect(help).not.toMatch(/\/ml todo (?!add|list|n|a|l|d|u|c|p|done|undo|cancel|postpone)\w+/)
     })
 
     it('init：严格无参数（Vault 设置的唯一入口）', () => {
@@ -96,6 +98,14 @@ describe('parseMlArgs（/ml 文法）', () => {
       expect(() => parseMlArgs('note 会压缩这段话')).toThrow(/没有发给助手/)
       expect(() => parseMlArgs('note 的过程还是不会显示')).toThrow(/想对助手说话/)
       expect(parseMlArgs('notebook 记事本')).toEqual({ family: 'journal', text: 'notebook 记事本' })
+    })
+
+    it('ask：必须带问题（保留字，不再当记录文本）', () => {
+      expect(parseMlArgs('ask 生产库的端口是多少')).toEqual({ family: 'ask', text: '生产库的端口是多少' })
+      expect(parseMlArgs('ask  主库  连接串  ')).toEqual({ family: 'ask', text: '主库 连接串' })
+      expect(() => parseMlArgs('ask')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('ask')).toThrow(/\/ml ask/)
+      expect(parseMlArgs('asking about vault')).toEqual({ family: 'journal', text: 'asking about vault' })
     })
 
     it('todo c / cancel：取消待办（序号寻址，同 d）', () => {

@@ -1,7 +1,7 @@
 {
     "name": "dsh-memoryleak",
-    "version": "0.13.1",
-    "description": "Notes and todos as plain Markdown in one Vault folder of your choice: /ml jots into today's journal, todos come in deadline/sleep-until/anytime flavors with auto-wakeup, /ml view fuzzy-opens any file — zero-token slash commands, notes stay plain files.",
+    "version": "0.14.0",
+    "description": "Notes and todos as plain Markdown in one Vault folder of your choice: /ml jots into today's journal, todos come in deadline/sleep-until/anytime flavors with auto-wakeup, /ml note distills chats into a knowledge base, /ml ask answers questions from it, /ml view fuzzy-opens any file — notes stay plain files.",
     "author": "温酒 <zjwjxdm@gmail.com>",
     "type": "module",
     "main": "src/index.js",

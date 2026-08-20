@@ -15,6 +15,7 @@ import { join, dirname, relative } from 'node:path'
 import { createRequire } from 'node:module'
 import YAML from 'yaml'
 import { TodoError } from './core/errors.js'
+import { realignMarkdownTables } from './core/table-align.js'
 import { locateJournal, JournalIoError } from './journal.js'
 import { VAULT_SETTINGS_FILENAME, readVaultNoteConfig } from './vault.js'
 import {
@@ -22,6 +23,7 @@ import {
   DEFAULT_STRUCTURED_TARGETS,
   buildNotePrompt,
   buildTranscript,
+  createNoteDigestStream,
   extractTableRows,
   findMarkdownTables,
   lostKeys,
@@ -216,13 +218,14 @@ export function resolveNoteModel(agent) {
 /**
  * 一次性压缩调用：单条 user 消息（转写 + 输出协议），累积 text-delta。
  * 可选 sink 把流式 chunk 原样转发进会话日志（UI 逐字渲染，与普通回复同款）。
+ * maxTokens 可选（缺省 NOTE_MAX_TOKENS；/ml ask 等复用方自带更长限额）。
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ provider: string, model: string, prompt: string, sessionId?: string, signal?: AbortSignal, onChunk?: (chunk: object) => void }} input
+ * @param {{ provider: string, model: string, prompt: string, sessionId?: string, signal?: AbortSignal, maxTokens?: number, onChunk?: (chunk: object) => void }} input
  * @returns {Promise<{ text: string, usage: object | undefined }>}
  * @throws {NoteLlmError}
  */
-export async function streamNoteCompletion(ctx, { provider, model, prompt, sessionId, signal, onChunk }) {
+export async function streamNoteCompletion(ctx, { provider, model, prompt, sessionId, signal, maxTokens, onChunk }) {
   const message = {
     id: crypto.randomUUID(),
     role: 'user',
@@ -236,7 +239,7 @@ export async function streamNoteCompletion(ctx, { provider, model, prompt, sessi
     provider,
     model,
     messages: [message],
-    maxTokens: NOTE_MAX_TOKENS,
+    maxTokens: maxTokens ?? NOTE_MAX_TOKENS,
     ...(sessionId === undefined ? {} : { sessionId }),
     ...(signal === undefined ? {} : { signal }),
   })) {
@@ -249,7 +252,7 @@ export async function streamNoteCompletion(ctx, { provider, model, prompt, sessi
     throw new NoteLlmError(`模型调用失败：${finish.failure?.message ?? finish.kind}`)
   }
   if (finish.kind === 'max-tokens') {
-    throw new NoteLlmError(`输出被 maxTokens=${NOTE_MAX_TOKENS} 截断，JSON 可能不完整。请稍后重试，或把对话分段整理。`)
+    throw new NoteLlmError(`输出被 maxTokens=${maxTokens ?? NOTE_MAX_TOKENS} 截断，内容可能不完整。请稍后重试，或把问题拆小一点。`)
   }
   return { text, usage }
 }
@@ -268,7 +271,7 @@ export async function streamNoteCompletion(ctx, { provider, model, prompt, sessi
  * @param {object} session 活会话（agent.session）
  * @param {number} stepKey 本次执行的唯一 step 编号（负数）
  */
-function createNoteStreamSink(session, stepKey) {
+export function createNoteStreamSink(session, stepKey) {
   const chunkSeqs = []
   /** 事件 append 的容错包装（显示通道，坏了不伤业务）。 */
   const safeAppend = (type, data, ...opts) => {
@@ -339,7 +342,7 @@ async function readVaultFile(path) {
 
 async function writeVaultFile(path, content) {
   try {
-    await writeFile(path, content, 'utf8')
+    await writeFile(path, alignOnWrite(path, content), 'utf8')
   } catch (error) {
     throw new JournalIoError(`写入 ${path} 失败：${error instanceof Error ? error.message : String(error)}`)
   }
@@ -347,6 +350,14 @@ async function writeVaultFile(path, content) {
 
 /** 备份目录名（vault 根下；在默认扫描排除列表里）。 */
 export const BACKUP_DIR = '.backup'
+
+/**
+ * 写时 lint：markdown 文件写入前把全文件表格列宽重新对齐（只补空白，
+ * 单元格内容逐字保留；见 core/table-align.js）。非 .md 原样写入。
+ */
+function alignOnWrite(path, content) {
+  return path.toLowerCase().endsWith('.md') ? realignMarkdownTables(content) : content
+}
 
 /**
  * 修改一个已存在的知识文件前做一次备份：进 vault 的 .backup/ 隐藏目录，
@@ -686,6 +697,10 @@ export async function runNoteCommand(ctx, agent, invocation, vaultDir, settings)
 
   let completion
   let parsed
+  // 流式过程显示：模型输出不转发原始 JSON（无 markdown 结构，气泡里糊成一
+  // 团），改为增量解析、把已完成的部分格式化为 markdown 分段追加（与普通
+  // 对话同款的分块渲染）。解析失败只是少几段显示，不影响正式解析。
+  const digest = createNoteDigestStream()
   try {
     completion = await streamNoteCompletion(ctx, {
       provider: target.provider,
@@ -697,8 +712,10 @@ export async function runNoteCommand(ctx, agent, invocation, vaultDir, settings)
         ? {}
         : {
             onChunk: (chunk) => {
-              if (chunk.type === 'text-delta') sink.delta(chunk.text)
-              else if (chunk.type === 'usage') sink.usage(chunk.usage)
+              if (chunk.type === 'text-delta') {
+                const piece = digest.push(chunk.text)
+                if (piece !== '') sink.delta(piece)
+              } else if (chunk.type === 'usage') sink.usage(chunk.usage)
             },
           }),
     })
@@ -717,44 +734,49 @@ export async function runNoteCommand(ctx, agent, invocation, vaultDir, settings)
     if (sink !== null) sink.interrupt()
     throw error
   }
-  const lines = [
-    `已整理（${scope}，${transcript.included}/${transcript.total} 条消息${transcript.truncated ? '，超预算已裁剪' : ''}）`,
-    `摘要：${persisted.summary}`,
-    '',
-    `工作记录 → ${persisted.noteFile} ## NOTE${persisted.created ? '（新建文件）' : ''}`,
-  ]
+  // 回执双版本：命令卡片是 pre-wrap 纯文本（result.text）；会话气泡走
+  // markdown 渲染（settle 文本），用分块结构显示（摘要 / 写入 / 注意）。
+  const head = `已整理（${scope}，${transcript.included}/${transcript.total} 条消息${transcript.truncated ? '，超预算已裁剪' : ''}）`
   const knownCount = Object.values(known.structured).reduce((sum, rows) => sum + rows.length, 0)
-  if (knownCount > 0 || known.titles.length > 0) {
-    lines.push(`在已有知识基础上增补（存量：${knownCount} 条登记 + ${known.titles.length} 个知识条目${noteConfig.noteBackup === true ? `；改前备份进 ${BACKUP_DIR}/` : ''}）`)
-  }
-  if (skill.text !== '') lines.push(`已按 note skill 约定整理（${noteConfig.noteSkill}）`)
-  if (persisted.momentoFiles.length > 0) {
-    lines.push(`知识库 → ${persisted.momentoFiles.join('、')}`)
-  }
   const structuredCount = Object.values(parsed.structured).reduce((sum, rows) => sum + rows.length, 0)
-  if (structuredCount > 0) {
-    lines.push(`结构化登记 ${structuredCount} 条（按各自主键合并）`)
+  const usage = completion.usage
+  const totalTokens = typeof usage?.totalTokens === 'number' ? usage.totalTokens : undefined
+  const modelLine = `模型：${target.provider}/${target.model}${totalTokens !== undefined ? ` · ${totalTokens} tokens` : ''} · dsh-memoryleak v${PLUGIN_VERSION}`
+
+  const writeItems = [`工作记录 → ${persisted.noteFile} ## NOTE${persisted.created ? '（新建文件）' : ''}`]
+  if (knownCount > 0 || known.titles.length > 0) {
+    writeItems.push(`在已有知识基础上增补（存量：${knownCount} 条登记 + ${known.titles.length} 个知识条目${noteConfig.noteBackup === true ? `；改前备份进 ${BACKUP_DIR}/` : ''}）`)
   }
+  if (skill.text !== '') writeItems.push(`已按 note skill 约定整理（${noteConfig.noteSkill}）`)
+  if (persisted.momentoFiles.length > 0) writeItems.push(`知识库 → ${persisted.momentoFiles.join('、')}`)
+  if (structuredCount > 0) writeItems.push(`结构化登记 ${structuredCount} 条（按各自主键合并）`)
+
   const allWarnings = [...parsed.warnings, ...persisted.warnings]
   if (skill.warning !== null) allWarnings.push(skill.warning)
-  if (allWarnings.length > 0) {
-    lines.push('', '注意：', ...allWarnings.map((warning) => `- ${warning}`))
-  }
-  if (completion.usage !== undefined) {
-    const usage = completion.usage
-    const total = typeof usage.totalTokens === 'number' ? usage.totalTokens : undefined
-    lines.push('', `模型：${target.provider}/${target.model}${total !== undefined ? ` · ${total} tokens` : ''} · dsh-memoryleak v${PLUGIN_VERSION}`)
-  } else {
-    lines.push('', `模型：${target.provider}/${target.model} · dsh-memoryleak v${PLUGIN_VERSION}`)
-  }
+
+  const lines = [head, `摘要：${persisted.summary}`, '', ...writeItems]
+  if (allWarnings.length > 0) lines.push('', '注意：', ...allWarnings.map((warning) => `- ${warning}`))
+  lines.push('', modelLine)
   const receipt = lines.join('\n')
-  // 成功收尾：会话气泡定格为结果摘要（进入对话上下文，下次压缩时被排除）。
-  if (sink !== null) sink.settle(`${NOTE_MARK} ${receipt}`, { kind: 'model', provider: target.provider, model: target.model }, completion.usage)
+
+  const markdown = [
+    `${NOTE_MARK} ${head}`,
+    '',
+    `**摘要**`,
+    persisted.summary,
+    '',
+    '**写入**',
+    ...writeItems.map((item) => `- ${item}`),
+  ]
+  if (allWarnings.length > 0) markdown.push('', '**注意**', ...allWarnings.map((warning) => `- ${warning}`))
+  markdown.push('', modelLine)
+  // 成功收尾：会话气泡定格为 markdown 结构化回执（进入对话上下文，下次压缩时被排除）。
+  if (sink !== null) sink.settle(markdown.join('\n'), { kind: 'model', provider: target.provider, model: target.model }, completion.usage)
   return { kind: 'success', text: receipt }
 }
 
 /** 当前 command/run 事件的 seq（合成 step 编号的唯一性来源；找不到取日志末 seq）。 */
-function resolveCurrentRunSeq(session, commandId) {
+export function resolveCurrentRunSeq(session, commandId) {
   const events = Array.isArray(session?.events) ? session.events : []
   const run = events.find((event) => event.type === 'command/run' && event.data?.commandId === commandId)
   if (run !== undefined && Number.isSafeInteger(run.seq)) return run.seq

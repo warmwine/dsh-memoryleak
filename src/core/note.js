@@ -15,6 +15,7 @@
  */
 import YAML from 'yaml'
 import { TodoError } from './errors.js'
+import { displayWidth, padToWidth } from './table-align.js'
 
 /** 模型输出解析失败（协议不符 / 空输出），命令层转成用户可见错误。 */
 export class NoteParseError extends TodoError {}
@@ -701,6 +702,249 @@ function toStringArray(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []
 }
 
+/* ---------------- 模型输出流式摘要（digest：边流边解析为 markdown 分段） ---------------- */
+
+/** digest 条目展示限长（只影响过程显示，不影响落盘内容）。 */
+const DIGEST_ITEM_LIMIT = 120
+
+/** 结构化各类的条目主键字段与简介字段（digest 行渲染用；kind 集合与 STRUCTURED_SPECS 一致）。 */
+const DIGEST_KIND_META = Object.freeze({
+  databases: Object.freeze({ key: 'name', detail: ['type', 'host'] }),
+  servers: Object.freeze({ key: 'name', detail: ['host', 'ip'] }),
+  credentials: Object.freeze({ key: 'name', detail: ['kind', 'where'] }),
+  glossary: Object.freeze({ key: 'term', detail: ['definition'] }),
+})
+
+/**
+ * 增量解析模型的 JSON 输出，把**已完成**的部分即时格式化为 markdown 分段
+ * （append-only，按模型输出顺序）：`**摘要**` → `**工作记录**`（列表）→
+ * `**知识条目**`（列表）→ `**结构化登记 · kind**`（列表）。
+ *
+ * 用途：/ml note 的流式过程显示。气泡走 markdown 渲染（与普通对话同款），
+ * 而模型的原始输出是一整个 JSON——直接转发没有任何 markdown 结构，渲染
+ * 出来糊成一团；这里改为只输出人读的段落，边流边补。
+ *
+ * 容错契约：任何输入（截断、fence、前后杂文字、非法 JSON）都不抛错——
+ * 解析不下去就停止产出，后续的正式解析（parseNoteJson）与错误路径不受
+ * 影响。路径契约与 parseNoteJson 一致：summary / note 顶层，momento.
+ * entries 为知识条目，structured.<kind> 顶层。
+ *
+ * @returns {{ push(delta: string): string, text(): string }}
+ *   push 返回自上次调用以来新增的 markdown 文本（可为空串）；text 返回累计全文。
+ */
+export function createNoteDigestStream() {
+  let buffer = ''
+  let pos = 0
+  let started = false // 已找到首个 {（JSON 正文开始）
+  let dead = false // 结构损坏：停止产出（绝不抛错）
+  let inString = false
+  let escape = false
+  let stringStart = -1
+  let stringValueKey // 字符串 token 开始于数组第几项 / 对象哪个键
+  /** 容器帧：{ type, key, elemIndex, captureStart? }；frames[0] 是 JSON 根对象。 */
+  const frames = []
+  let pendingKey = null // 对象里最近读到、还没取到值的键名
+
+  const emitted = []
+  let pendingOut = ''
+  const opened = { note: false, entries: false, kind: {} }
+
+  const currentPath = () => frames.slice(1).map((frame) => frame.key)
+  const valueKey = () => {
+    const top = frames[frames.length - 1]
+    if (top === undefined) return undefined
+    return top.type === 'array' ? top.elemIndex : pendingKey
+  }
+  function completeValue() {
+    const top = frames[frames.length - 1]
+    if (top === undefined) return
+    if (top.type === 'array') top.elemIndex += 1
+    else pendingKey = null
+  }
+
+  /* ----- 格式化（append-only：标题只随首个条目出现，段落靠空行分隔） ----- */
+
+  const emit = (text) => {
+    pendingOut += text
+    emitted.push(text)
+  }
+  const emitSummary = (text) => emit(`**摘要** ${oneLine(text, DIGEST_ITEM_LIMIT)}\n\n`)
+  const emitNoteItem = (text) => {
+    if (!opened.note) {
+      emit('**工作记录**\n')
+      opened.note = true
+    }
+    emit(`- ${oneLine(text, DIGEST_ITEM_LIMIT)}\n`)
+  }
+  const emitEntry = (entry) => {
+    const title = entry !== null && typeof entry === 'object' && typeof entry.title === 'string' ? entry.title : ''
+    if (title.trim() === '') return
+    if (!opened.entries) {
+      emit('**知识条目**\n')
+      opened.entries = true
+    }
+    emit(`- ${oneLine(title, DIGEST_ITEM_LIMIT)}\n`)
+  }
+  const emitKindRow = (kind, row) => {
+    const meta = DIGEST_KIND_META[kind]
+    if (meta === undefined || row === null || typeof row !== 'object') return
+    const key = typeof row[meta.key] === 'string' ? oneLine(row[meta.key], DIGEST_ITEM_LIMIT) : ''
+    if (key.trim() === '') return
+    if (!opened.kind[kind]) {
+      emit(`**结构化登记 · ${kind}**\n`)
+      opened.kind[kind] = true
+    }
+    const detail = meta.detail
+      .map((field) => (typeof row[field] === 'string' ? row[field].trim() : ''))
+      .filter((value) => value !== '')
+      .slice(0, 2)
+      .map((value) => oneLine(value, 60))
+      .join(' · ')
+    emit(`- ${key}${detail === '' ? '' : `（${detail}）`}\n`)
+  }
+
+  /* ----- 事件分派（按容器/值的路径） ----- */
+
+  function onString(path, value) {
+    if (path.length === 1 && path[0] === 'summary' && value !== '') emitSummary(value)
+    else if (path.length === 2 && path[0] === 'note' && typeof path[1] === 'number' && value !== '') emitNoteItem(value)
+  }
+
+  function onContainerClosed(frame, path) {
+    if (frame.captureStart !== undefined) {
+      let value
+      try {
+        value = JSON.parse(buffer.slice(frame.captureStart, frame.captureEnd + 1))
+      } catch {
+        return // 单个条目解析失败只影响该条的显示
+      }
+      if (path.length === 3 && path[0] === 'momento' && path[1] === 'entries' && typeof path[2] === 'number') emitEntry(value)
+      else if (path.length === 3 && path[0] === 'structured' && typeof path[1] === 'string' && typeof path[2] === 'number') emitKindRow(path[1], value)
+      return
+    }
+    if (frame.type !== 'array') return
+    if (path.length === 1 && path[0] === 'note' && opened.note) emit('\n')
+    else if (path.length === 2 && path[0] === 'momento' && path[1] === 'entries' && opened.entries) emit('\n')
+    else if (path.length === 2 && path[0] === 'structured' && typeof path[1] === 'string' && opened.kind[path[1]]) emit('\n')
+  }
+
+  /* ----- 扫描器 ----- */
+
+  function openContainer(type) {
+    const key = valueKey()
+    const path = [...currentPath(), key]
+    const wantCapture =
+      type === 'object' &&
+      ((path.length === 3 && path[0] === 'momento' && path[1] === 'entries' && typeof path[2] === 'number') ||
+        (path.length === 3 && path[0] === 'structured' && typeof path[1] === 'string' && typeof path[2] === 'number'))
+    frames.push({ type, key, elemIndex: 0, ...(wantCapture ? { captureStart: pos } : {}) })
+    pendingKey = null
+  }
+
+  function closeContainer() {
+    const frame = frames.pop()
+    if (frame === undefined) {
+      dead = true
+      return
+    }
+    onContainerClosed(frame, [...currentPath(), frame.key])
+    completeValue()
+  }
+
+  function scan() {
+    while (!dead && pos < buffer.length) {
+      const char = buffer[pos]
+      if (!started) {
+        if (char === '{') {
+          started = true
+          frames.push({ type: 'object', key: null, elemIndex: 0 })
+          pendingKey = null
+        }
+        pos += 1
+        continue
+      }
+      if (inString) {
+        if (escape) {
+          escape = false
+        } else if (char === '\\') {
+          escape = true
+        } else if (char === '"') {
+          inString = false
+          let value = ''
+          try {
+            value = JSON.parse(buffer.slice(stringStart, pos + 1))
+          } catch {
+            value = ''
+          }
+          pos += 1
+          const top = frames[frames.length - 1]
+          if (top !== undefined && top.type === 'object' && pendingKey === null) {
+            pendingKey = value // 对象键名（下一个值的主键）
+          } else if (stringValueKey !== undefined) {
+            onString([...currentPath(), stringValueKey], value)
+            completeValue()
+          } else {
+            dead = true
+            break
+          }
+          stringValueKey = undefined
+          continue
+        }
+        pos += 1
+        continue
+      }
+      if (char === '"') {
+        inString = true
+        stringStart = pos
+        stringValueKey = valueKey()
+        pos += 1
+        continue
+      }
+      if (char === '{' || char === '[') {
+        openContainer(char === '{' ? 'object' : 'array')
+        pos += 1
+        continue
+      }
+      if (char === '}' || char === ']') {
+        if (char === '}') {
+          const frame = frames[frames.length - 1]
+          if (frame !== undefined && frame.captureStart !== undefined) frame.captureEnd = pos
+        }
+        closeContainer()
+        pos += 1
+        continue
+      }
+      if (char === ',' || char === ':') {
+        pos += 1
+        continue
+      }
+      if (/\s/.test(char)) {
+        pos += 1
+        continue
+      }
+      // 标量（数字 / true / false / null）：吞到下一个分隔符；未完结则等待后续 delta
+      const stop = buffer.slice(pos).search(/[,}\]]/)
+      if (stop === -1) break
+      pos += stop
+      completeValue()
+    }
+  }
+
+  return {
+    push(delta) {
+      if (typeof delta !== 'string' || delta === '') return ''
+      buffer += delta
+      scan()
+      const out = pendingOut
+      pendingOut = ''
+      return out
+    },
+    text() {
+      return emitted.join('')
+    },
+  }
+}
+
 /**
  * 结构化行的语义清洗（常见模型错误就地修正）：
  *   - port 只留纯数字（「5432 端口」→「5432」；非数字清空）；
@@ -821,9 +1065,27 @@ export function findMarkdownTables(content, labels) {
   return tables
 }
 
-/** 渲染一张带表头的完整表格。 */
+/**
+ * 渲染一张带表头的完整表格：按每列最大显示宽度补空格对齐（宽字符按
+ * 2 列计），分隔线随列宽伸展（至少 ---，短表头列如 IP 也有 ---）。对齐
+ * 只影响插件自己整体重写的表格；解析端逐单元格 trim（splitTableRow），
+ * 旧的单空格表格照常读取合并，输出再入也字节稳定。列宽算法与写时
+ * realignMarkdownTables（table-align.js）同源，二者叠加幂等。
+ */
 function renderTable(labels, dataRows) {
-  return [`| ${labels.join(' | ')} |`, `| ${labels.map(() => '---').join(' | ')} |`, ...dataRows.map((cells) => `| ${cells.map((cell) => cleanCell(cell ?? '')).join(' | ')} |`)]
+  const columns = Math.max(labels.length, ...dataRows.map((cells) => cells.length))
+  const header = [...labels]
+  while (header.length < columns) header.push('')
+  const rows = dataRows.map((cells) => {
+    const filled = cells.map((cell) => cleanCell(cell ?? ''))
+    while (filled.length < columns) filled.push('')
+    return filled.slice(0, columns)
+  })
+  const widths = header.map(
+    (_, index) => Math.max(3, displayWidth(header[index]), ...rows.map((cells) => displayWidth(cells[index]))),
+  )
+  const rowLine = (cells) => `| ${cells.map((cell, index) => padToWidth(cell, widths[index])).join(' | ')} |`
+  return [rowLine(header), `| ${widths.map((width) => '-'.repeat(width)).join(' | ')} |`, ...rows.map(rowLine)]
 }
 
 /* ---------------- index.md（安全化：只认自己的表头；不认 → 追加小节） ---------------- */

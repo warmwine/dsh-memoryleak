@@ -36,6 +36,7 @@ import { wakeupSleepingTodos, toggleTodoAt, cancelTodoAt, postponeTodoAt, restor
 import { resolveViewTarget } from './core/fuzzy.js'
 import { prepareVaultDir, resolveEffectiveSettings, writeVaultSettingsFile, VAULT_SETTINGS_FILENAME } from './vault.js'
 import { runNoteCommand, NoteLlmError } from './note.js'
+import { runAskCommand } from './ask.js'
 import { NoteParseError } from './core/note.js'
 
 /**
@@ -141,6 +142,9 @@ export function apply(ctx) {
     }
     if (parsed.family === 'note') {
       return runNoteCommand(ctx, agent, { commandId, signal }, cwd, settings)
+    }
+    if (parsed.family === 'ask') {
+      return runAskCommand(ctx, agent, { commandId, signal }, cwd, parsed.text)
     }
     if (parsed.family === 'view') {
       if (parsed.text === null) {

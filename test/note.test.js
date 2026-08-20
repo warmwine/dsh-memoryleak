@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import {
   buildTranscript,
   buildNotePrompt,
+  createNoteDigestStream,
   parseNoteJson,
   slugify,
   renderEntryFile,
@@ -43,6 +44,21 @@ import {
   NoteLlmError,
   MOMENTO_DIR,
 } from '../src/note.js'
+
+/* ---------------- 表格行断言助手 ---------------- */
+
+/**
+ * 表格数据行断言：单元格内容逐项一致、列数一致，单元格内空格任意。
+ * renderTable 按每列最大显示宽度对齐渲染（补空格、中文计 2 列宽），
+ * 行断言不应脆在具体补了几格空格上。
+ *
+ * @param {...string} cells 期望的单元格内容（空串 = 空单元格）
+ */
+const tableRow = (...cells) =>
+  new RegExp(
+    `^\\|${cells.map((cell) => ` ${String(cell).replace(/[$()*+.?[\\\]^{|}]/g, '\\$&')} *\\|`).join('')}$`,
+    'm',
+  )
 
 /* ---------------- 事件工厂（伪 session 日志） ---------------- */
 
@@ -284,13 +300,13 @@ describe('slugify / 知识文件渲染', () => {
 
   it('index：新建与按文件名去重更新（保留最早记录日）', () => {
     const first = mergeIndexDocument(null, [{ slug: 'a', title: 'A', date: '2026-02-06', summary: 's1' }])
-    expect(first).toContain('| A | a.md | 2026-02-06 | s1 |')
+    expect(first).toMatch(tableRow('A', 'a.md', '2026-02-06', 's1'))
     const second = mergeIndexDocument(first, [
       { slug: 'a', title: 'A2', date: '2026-02-08', summary: 's2' },
       { slug: 'b', title: 'B', date: '2026-02-08', summary: '' },
     ])
-    expect(second).toContain('| A2 | a.md | 2026-02-06 | s2 |')
-    expect(second).toContain('| B | b.md | 2026-02-08 |  |')
+    expect(second).toMatch(tableRow('A2', 'a.md', '2026-02-06', 's2'))
+    expect(second).toMatch(tableRow('B', 'b.md', '2026-02-08', ''))
     expect(second.match(/\| a\.md/g)).toHaveLength(1)
   })
 })
@@ -303,8 +319,8 @@ describe('mergeStructuredDocument（结构化表格：零丢失合并）', () =>
       { name: '主库', type: 'postgres', host: 'db.example.com', port: '5432', database: 'app', user: 'app', notes: '' },
     ])
     expect(doc).toContain(`# ${STRUCTURED_SPECS.databases.title}`)
-    expect(doc).toContain('| 名称 | 类型 | 主机 | 端口 | 库 | 用户 | 备注 |')
-    expect(doc).toContain('| 主库 | postgres | db.example.com | 5432 | app | app |  |')
+    expect(doc).toMatch(tableRow('名称', '类型', '主机', '端口', '库', '用户', '备注'))
+    expect(doc).toMatch(tableRow('主库', 'postgres', 'db.example.com', '5432', 'app', 'app', ''))
     const cred = mergeStructuredDocument(null, 'credentials', [{ name: 'AK', kind: 'api-key', where: 'env' }])
     expect(cred).toContain('永不写入明文密码')
   })
@@ -317,8 +333,8 @@ describe('mergeStructuredDocument（结构化表格：零丢失合并）', () =>
       { name: 'web1', host: 'new.example.com' }, // 覆盖 host，其余保留
       { name: 'db1', host: 'db1.example.com', notes: '新机器' }, // 追加
     ])
-    expect(merged).toContain('| web1 | new.example.com | 10.0.0.1 | root | debian | 边缘 |')
-    expect(merged).toContain('| db1 | db1.example.com |  |  |  | 新机器 |')
+    expect(merged).toMatch(tableRow('web1', 'new.example.com', '10.0.0.1', 'root', 'debian', '边缘'))
+    expect(merged).toMatch(tableRow('db1', 'db1.example.com', '', '', '', '新机器'))
     expect(merged.match(/^\| /gm)).toHaveLength(4) // 表头 + 分隔线 + 2 数据行
   })
 
@@ -352,7 +368,7 @@ describe('mergeStructuredDocument（结构化表格：零丢失合并）', () =>
     expect(merged).toContain('| 老库B | 10.1.1.2 |')
     // 新内容以独立小节追加在末尾，带日期戳
     expect(merged).toContain('## Databases（2026-02-07 追加）')
-    expect(merged).toContain('| 新库 | mysql |')
+    expect(merged).toMatch(tableRow('新库', 'mysql', '', '', '', '', ''))
     // 原有内容的顺序与位置不变（追加在原内容之后）
     expect(merged.indexOf('| 老库B | 10.1.1.2 |')).toBeLessThan(merged.indexOf('## Databases'))
   })
@@ -371,8 +387,8 @@ describe('mergeStructuredDocument（结构化表格：零丢失合并）', () =>
     ].join('\n')
     const merged = mergeStructuredDocument(file, 'databases', [{ name: '新库', type: 'mysql' }])
     expect(merged).toContain('> 生产资产登记，更新请谨慎。')
-    expect(merged).toContain('| 主库 | postgres | 10.0.0.5 | 5432 | app | app | 主从 |') // 老行保留
-    expect(merged).toContain('| 新库 | mysql |') // 新行追加
+    expect(merged).toMatch(tableRow('主库', 'postgres', '10.0.0.5', '5432', 'app', 'app', '主从')) // 老行保留
+    expect(merged).toMatch(tableRow('新库', 'mysql', '', '', '', '', '')) // 新行追加
     expect(merged).toContain('其他说明文字（表格之后）。')
     expect(merged.indexOf('其他说明文字')).toBeGreaterThan(merged.indexOf('| 新库 |'))
   })
@@ -380,8 +396,8 @@ describe('mergeStructuredDocument（结构化表格：零丢失合并）', () =>
   it('手改坏的数据行（列数不齐）：能解析的行仍参与合并，截断部分补空不丢行', () => {
     const handEdited = '# Servers\n\n| 名称 | 主机 | IP | 登录用户 | 系统 | 备注 |\n| --- | --- | --- | --- | --- | --- |\n| web1 | h |  |  |  |\n'
     const merged = mergeStructuredDocument(handEdited, 'servers', [{ name: 'web2', host: 'h2' }])
-    expect(merged).toContain('| web1 |')
-    expect(merged).toContain('| web2 | h2 |')
+    expect(merged).toMatch(tableRow('web1', 'h', '', '', '', ''))
+    expect(merged).toMatch(tableRow('web2', 'h2', '', '', '', ''))
   })
 
   it('多个匹配表格（历史追加小节）：全部收编进第一个表格，行不重复不丢失', () => {
@@ -403,6 +419,53 @@ describe('mergeStructuredDocument（结构化表格：零丢失合并）', () =>
     expect(merged.match(/^\| 名称 \| 主机/gm)).toHaveLength(1) // 只剩一个表（旧的被收编）
     // 文本行（追加小节标题）按「文本永不删」原则保留
     expect(merged).toContain('## Servers（2026-02-01 追加）')
+  })
+})
+
+/* ---------------- 表格对齐渲染 ---------------- */
+
+describe('renderTable 列宽对齐（写出的表格自动对齐）', () => {
+  it('ASCII 内容：按每列最大宽度对齐，分隔线随列宽伸展', () => {
+    const doc = mergeStructuredDocument(null, 'glossary', [{ term: 'DSH', definition: 'DeepSeek Harness' }])
+    expect(doc).toContain(
+      [
+        '| 术语 | 含义             | 备注 |',
+        '| ---- | ---------------- | ---- |',
+        '| DSH  | DeepSeek Harness |      |',
+      ].join('\n'),
+    )
+  })
+
+  it('中文内容：宽字符按 2 列宽计，等宽字体下各列对齐', () => {
+    const doc = mergeStructuredDocument(null, 'glossary', [
+      { term: '术语表', definition: 'x' },
+      { term: 'a', definition: '术语表' },
+    ])
+    expect(doc).toContain(
+      [
+        '| 术语   | 含义   | 备注 |',
+        '| ------ | ------ | ---- |',
+        '| 术语表 | x      |      |',
+        '| a      | 术语表 |      |',
+      ].join('\n'),
+    )
+  })
+
+  it('短表头列（IP）：列宽下限 3，分隔线至少 ---', () => {
+    const doc = mergeStructuredDocument(null, 'servers', [{ name: 'web1', host: 'h1' }])
+    expect(doc).toMatch(/^\| 名称 \| 主机 \| IP  \| 登录用户 \| 系统 \| 备注 \|$/m)
+    expect(doc).toMatch(/^\| ---- \| ---- \| --- \| -------- \| ---- \| ---- \|$/m)
+  })
+
+  it('对齐输出可稳定再入：重复合并字节不变，解析按 trim 还原原值', () => {
+    const first = mergeStructuredDocument(null, 'glossary', [
+      { term: '术语表', definition: 'x' },
+      { term: 'a', definition: '术语表' },
+    ])
+    const second = mergeStructuredDocument(first, 'glossary', [{ term: 'a', definition: '术语表' }])
+    expect(second).toBe(first)
+    const known = extractStructuredRows(second, 'glossary')
+    expect(known.map((row) => row.term)).toEqual(['术语表', 'a'])
   })
 })
 
@@ -670,7 +733,7 @@ describe('persistNoteResult / runNoteCommand（端到端落盘）', () => {
     expect(journal).toContain('- core 纯逻辑：转写裁剪、协议解析、渲染')
 
     const db = await readFile(join(vault, MOMENTO_DIR, 'databases.md'), 'utf8')
-    expect(db).toContain('| 测试库 | sqlite |  |  | test.db |  |  |')
+    expect(db).toMatch(tableRow('测试库', 'sqlite', '', '', 'test.db', '', ''))
     const index = await readFile(join(vault, MOMENTO_DIR, 'index.md'), 'utf8')
     expect(index.match(/^\| /gm)).toHaveLength(4) // 表头 + 分隔线 + 2 entries
 
@@ -686,7 +749,7 @@ describe('persistNoteResult / runNoteCommand（端到端落盘）', () => {
     await persistNoteResult({ vaultDir: vault, settings: SETTINGS, now: () => new Date(2026, 1, 6, 16, 0), parsed: parsed2 })
     const db2 = await readFile(join(vault, MOMENTO_DIR, 'databases.md'), 'utf8')
     expect(db2.match(/^\| /gm)).toHaveLength(3) // 不重复
-    expect(db2).toContain('| 测试库 | sqlite |  |  | test.db |  | 加了备注 |')
+    expect(db2).toMatch(tableRow('测试库', 'sqlite', '', '', 'test.db', '', '加了备注'))
     const journal2 = await readFile(join(vault, '2026-02-06.md'), 'utf8')
     expect(journal2).toContain('### 14:30')
     expect(journal2).toContain('### 16:00')
@@ -758,9 +821,13 @@ describe('persistNoteResult / runNoteCommand（端到端落盘）', () => {
     await persistNoteResult({ vaultDir: vault, settings: SETTINGS, now: () => new Date(2026, 1, 7, 10, 0), parsed, backup: true })
     const after = await readFile(join(vault, MOMENTO_DIR, 'databases.md'), 'utf8')
     expect(after).toContain('* 生产主库 10.0.0.5，千万不能丢')
-    expect(after).toContain('| 老库A | 10.1.1.1 |')
-    expect(after).toContain('| 自定义表头 | 不是我们的格式 |')
-    expect(after).toContain('| 新库 | mysql | 10.9.9.9 |')
+    // 手写表格内容逐字保留（单元格 trim 相等），且写时 lint 把列宽对齐：
+    // 列宽 = 各列最大显示宽度（自定义表头 10 / 不是我们的格式 14）
+    expect(after).toMatch(tableRow('老库A', '10.1.1.1'))
+    expect(after).toMatch(/^\| 老库A {6}\| 10\.1\.1\.1 {7}\|$/m)
+    expect(after).toMatch(/^\| 自定义表头 \| 不是我们的格式 \|$/m)
+    expect(after).toMatch(/^\| ---------- \| -------------- \|$/m)
+    expect(after).toMatch(tableRow('新库', 'mysql', '10.9.9.9', '', '', '', ''))
     expect(after).toContain('## Databases（2026-02-07 追加）')
     // 开备份时：修改前的完整老内容在 .backup/ 里（保留相对路径），原目录无裸露 .bak
     const { readdir } = await import('node:fs/promises')
@@ -819,6 +886,105 @@ describe('persistNoteResult / runNoteCommand（端到端落盘）', () => {
   })
 })
 
+/* ---------------- 流式摘要 digest（边流边解析为 markdown 分段） ---------------- */
+
+describe('createNoteDigestStream（模型输出 → markdown 分段）', () => {
+  const SAMPLE = [
+    JSON.stringify({
+      summary: '把命令做到能跑',
+      note: ['core 纯逻辑', '宿主胶水'],
+      momento: { entries: [{ title: 'llm 用法', body: 'b', tags: ['dsh'] }] },
+      structured: {
+        databases: [{ name: '测试库', type: 'sqlite', host: '', port: '5432' }],
+        servers: [],
+        glossary: [{ term: 'MOMENTO', definition: '知识库目录' }],
+      },
+    }),
+  ].join('\n')
+  const EXPECTED =
+    '**摘要** 把命令做到能跑\n\n' +
+    '**工作记录**\n- core 纯逻辑\n- 宿主胶水\n\n' +
+    '**知识条目**\n- llm 用法\n\n' +
+    '**结构化登记 · databases**\n- 测试库（sqlite）\n\n' +
+    '**结构化登记 · glossary**\n- MOMENTO（知识库目录）\n\n'
+
+  it('一次性喂入：按段产出 markdown（空类不显示、简介取前两个字段）', () => {
+    const stream = createNoteDigestStream()
+    expect(stream.push(SAMPLE)).toBe(EXPECTED)
+    expect(stream.text()).toBe(EXPECTED)
+  })
+
+  it('逐字符喂入（最碎 delta）：产出与一次性喂入完全一致', () => {
+    const stream = createNoteDigestStream()
+    let out = ''
+    for (const char of SAMPLE) out += stream.push(char)
+    expect(out).toBe(EXPECTED)
+  })
+
+  it('转义与 unicode：字符串 token 边界切在任何位置都不炸', () => {
+    const raw = JSON.stringify({ summary: '引号"与反斜杠\\和中文' })
+    const stream = createNoteDigestStream()
+    let out = ''
+    // 在 \" 与 \\ 中间切开（半个转义序列）
+    for (let index = 0; index < raw.length; index += 7) out += stream.push(raw.slice(index, index + 7))
+    out += stream.push('')
+    expect(out).toBe(`**摘要** 引号"与反斜杠\\和中文\n\n`)
+  })
+
+  it('fence 与前后杂文字：跳到首个 { 才开始，杂文字不产出', () => {
+    const stream = createNoteDigestStream()
+    const out = stream.push(['好的，如下：', '', '```json', SAMPLE, '```'].join('\n'))
+    expect(out).toBe(EXPECTED)
+  })
+
+  it('非 JSON / 截断输出：不抛错、不产出', () => {
+    const garbage = createNoteDigestStream()
+    expect(garbage.push('我无法输出 JSON')).toBe('')
+    expect(garbage.push('{"summary":"写到一半')).toBe('') // 字符串未闭合
+    expect(garbage.push('')).toBe('')
+    expect(garbage.text()).toBe('')
+  })
+
+  it('杂文字里带 { 后再给合法 JSON：显示降级（首个值可能被吞）但绝不炸、后续段照常', () => {
+    const poisoned = createNoteDigestStream()
+    expect(poisoned.push('答案 { 也许')).toBe('')
+    const out = poisoned.push(SAMPLE)
+    expect(out).not.toContain('**摘要**') // 被杂文字的伪标量吞掉
+    expect(out).toContain('**工作记录**\n- core 纯逻辑')
+    expect(out).toContain('**结构化登记 · databases**')
+  })
+
+  it('空字符串条目与缺主键行：跳过；首个有效条目才带出段标题', () => {
+    const stream = createNoteDigestStream()
+    const out = stream.push(
+      JSON.stringify({
+        summary: '',
+        note: ['', '有效条目'],
+        momento: { entries: [{ title: '', body: 'x' }, { title: '有效标题', body: 'y' }] },
+        structured: { credentials: [{ name: '', where: 'env' }, { name: 'AK', where: '环境变量 X' }] },
+      }),
+    )
+    expect(out).toBe(
+      '**工作记录**\n- 有效条目\n\n' +
+        '**知识条目**\n- 有效标题\n\n' +
+        '**结构化登记 · credentials**\n- AK（环境变量 X）\n\n',
+    )
+  })
+
+  it('键序不同：段落按模型输出顺序出现（append-only 的自然结果）', () => {
+    const stream = createNoteDigestStream()
+    const out = stream.push(
+      JSON.stringify({
+        structured: { glossary: [{ term: 'T', definition: 'D' }] },
+        summary: 'S',
+        note: ['n'],
+      }),
+    )
+    expect(out.indexOf('结构化登记 · glossary')).toBeLessThan(out.indexOf('**摘要**'))
+    expect(out.indexOf('**摘要**')).toBeLessThan(out.indexOf('**工作记录**'))
+  })
+})
+
 /* ---------------- 流式过程显示（合成会话事件） ---------------- */
 
 describe('runNoteCommand 流式过程（assistant-step 合成事件）', () => {
@@ -854,8 +1020,21 @@ describe('runNoteCommand 流式过程（assistant-step 合成事件）', () => {
     expect(firstDelta.data.chunk.text).toContain('2/2 条消息')
     expect(firstDelta.data.chunk.text).toContain('prov/model-x')
 
-    // 模型输出逐 delta 转发；usage 也转发（log-only）
-    expect(chunks.some((entry) => entry.data.chunk.text === MODEL_OUTPUT)).toBe(true)
+    // 模型输出不再原样转发（原始 JSON 无 markdown 结构，气泡里糊成一团）；
+    // 改为增量解析后的 markdown 分段：摘要 / 工作记录 / 知识条目 / 结构化登记
+    const streamed = chunks
+      .filter((entry) => entry.data.chunk.type === 'text-delta')
+      .map((entry) => entry.data.chunk.text)
+      .join('')
+    expect(streamed).not.toContain('"summary"')
+    expect(streamed).toContain('**摘要** 把 /ml note 命令从零做到能跑')
+    expect(streamed).toContain('**工作记录**\n- core 纯逻辑：转写裁剪、协议解析、渲染\n- 宿主胶水：区间定位、llm 调用、落盘\n\n')
+    expect(streamed).toContain('**知识条目**\n- DSH llm.stream 用法\n- command/run 边界\n\n')
+    expect(streamed).toContain('**结构化登记 · databases**\n- 测试库（sqlite）\n\n')
+    expect(streamed).toContain('**结构化登记 · credentials**\n- GitHub Token（token · 环境变量 GH_TOKEN）\n\n')
+    expect(streamed).toContain('**结构化登记 · glossary**\n- MOMENTO（知识库目录）\n\n')
+    expect(streamed).not.toContain('结构化登记 · servers') // 空类不显示
+    // usage 也转发（log-only）
     expect(chunks.some((entry) => entry.data.chunk.type === 'usage')).toBe(true)
 
     // 全部合成事件在 turn 0、step 为非负整数（UI 校验 turn/step ≥ 0）
@@ -866,12 +1045,15 @@ describe('runNoteCommand 流式过程（assistant-step 合成事件）', () => {
     }
 
     // settle：append 型 assistant/message，内容以标记开头、带 model source 与 usage；
-    // 随后 step/end 闭合（与真实 loop 的 message → step/end 同构）
+    // 气泡回执为 markdown 分块（**摘要** / **写入**），随后 step/end 闭合
     const settle = messages[0]
     expect(settle.surfaceOp).toBe('append')
     expect(settle.data.message.role).toBe('assistant')
     expect(settle.data.message.source).toEqual({ kind: 'model', provider: 'prov', model: 'model-x' })
     expect(settle.data.message.content[0].text).toMatch(/^📌 \/ml note 已整理/)
+    expect(settle.data.message.content[0].text).toContain('**摘要**\n把 /ml note 命令从零做到能跑')
+    expect(settle.data.message.content[0].text).toMatch(/\*\*写入\*\*\n- 工作记录 → \S+\.md ## NOTE/)
+    expect(settle.data.message.content[0].text).toContain('· 99 tokens')
     expect(settle.data.usage).toEqual({ totalTokens: 99 })
     // 溯源：引用了流式 chunk 的 seq
     expect(Array.isArray(settle.sourceEventSeqs)).toBe(true)
@@ -1114,9 +1296,9 @@ describe('自定义表头目标（mergeTableDocument / extractTableRows）', () 
       { name: '主库', host: '10.0.0.6' }, // 更新
       { name: '新库', type: 'redis' }, // 追加
     ], '2026-02-08')
-    expect(merged).toContain('| 主库 | postgres | 10.0.0.6 | 5432 |')
-    expect(merged).toContain('| 老库B | mysql | 10.1.1.2 | 3306 |') // 未提及的行原样
-    expect(merged).toContain('| 新库 | redis |  |  |')
+    expect(merged).toMatch(tableRow('主库', 'postgres', '10.0.0.6', '5432'))
+    expect(merged).toMatch(tableRow('老库B', 'mysql', '10.1.1.2', '3306')) // 未提及的行原样
+    expect(merged).toMatch(tableRow('新库', 'redis', '', ''))
     expect(merged).toContain('# 基础设施库')
     expect(merged).toContain('> 历史资产说明。')
     expect(merged.match(/^\| 库名/gm)).toHaveLength(1)

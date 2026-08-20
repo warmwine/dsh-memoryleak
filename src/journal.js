@@ -8,6 +8,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { TodoError } from './core/errors.js'
+import { realignMarkdownTables } from './core/table-align.js'
 import {
   dailyFileName,
   formatDate,
@@ -27,6 +28,14 @@ import { createNodeFileSource } from './adapters/node-file-source.js'
 
 /** 日志读写故障（环境错误，命令层转用户可见结果）。 */
 export class JournalIoError extends TodoError {}
+
+/**
+ * 写时 lint：markdown 文件写入前把全文件表格列宽重新对齐（只补空白，
+ * 单元格内容逐字保留；见 core/table-align.js）。非 .md 原样返回。
+ */
+function alignOnWrite(path, content) {
+  return path.toLowerCase().endsWith('.md') ? realignMarkdownTables(content) : content
+}
 
 /**
  * 把一条记录写进工作区的日志/周志文件。
@@ -96,7 +105,7 @@ export async function locateJournal({ cwd, settings, now }) {
 /** 写回日志文件。 */
 async function writeJournal(located, next) {
   try {
-    await writeFile(located.path, next, 'utf8')
+    await writeFile(located.path, alignOnWrite(located.path, next), 'utf8')
   } catch (error) {
     throw new JournalIoError(
       `写入 ${located.file} 失败：${error instanceof Error ? error.message : String(error)}`,
@@ -211,7 +220,7 @@ export async function wakeupSleepingTodos(cwd, items, today) {
           // 行内容变化 → 跳过该条（下一轮扫描重新决策）
         }
       }
-      await writeFile(path, content, 'utf8')
+      await writeFile(path, alignOnWrite(path, content), 'utf8')
     } catch (error) {
       failures.push({ file, message: error instanceof Error ? error.message : String(error) })
     }
@@ -273,7 +282,7 @@ export async function toggleTodoAt(cwd, file, line, today, expectedRaw) {
   const result = toggleTodoLine(content, target, today)
   const raw = result.content.split('\n')[target - 1]
   try {
-    await writeFile(path, result.content, 'utf8')
+    await writeFile(path, alignOnWrite(path, result.content), 'utf8')
   } catch (error) {
     throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
@@ -304,7 +313,7 @@ export async function cancelTodoAt(cwd, file, line, today, expectedRaw) {
   const preRaw = lines[target - 1]
   const result = cancelTodoLine(content, target, today)
   try {
-    await writeFile(path, result.content, 'utf8')
+    await writeFile(path, alignOnWrite(path, result.content), 'utf8')
   } catch (error) {
     throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
@@ -335,7 +344,7 @@ export async function postponeTodoAt(cwd, file, line, days, expectedRaw) {
   const preRaw = lines[target - 1]
   const result = postponeTodoLine(content, target, days)
   try {
-    await writeFile(path, result.content, 'utf8')
+    await writeFile(path, alignOnWrite(path, result.content), 'utf8')
   } catch (error) {
     throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
@@ -367,7 +376,7 @@ export async function restoreTodoAt(cwd, file, line, expectedRaw, restoreRaw) {
   const target = relocateTodoLine(file, lines, line, expectedRaw)
   const next = replaceLine(content, target, expectedRaw, restoreRaw)
   try {
-    await writeFile(path, next, 'utf8')
+    await writeFile(path, alignOnWrite(path, next), 'utf8')
   } catch (error) {
     throw new JournalIoError(`写入 ${file} 失败：${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
