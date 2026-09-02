@@ -493,17 +493,26 @@ describe('assertNoRowLoss（写入前守卫：宁可失败也不丢行）', () =
 /* ---------------- insertNoteSection ---------------- */
 
 describe('insertNoteSection（日志 ## NOTE：### 小节纯追加）', () => {
-  it('daily：新建模块插在 ## MemoryLeak 之后，小节带时间与摘要', () => {
+  it('daily：新建模块建在 ## Todo 之后（不插日志与 Todo 中间），小节带时间与摘要', () => {
     const content = 'start: 2026-02-06\n\n## MemoryLeak\n\n- 上午的记录\n\n## Todo\n\n- [ ] x\n'
     const next = insertNoteSection(content, { mode: 'daily', date: '2026-02-06', time: '14:30', summary: '完成 note 命令', items: ['写核心逻辑', '写测试'] })
     const noteIndex = next.indexOf('## NOTE')
     const mlIndex = next.indexOf('## MemoryLeak')
     const todoIndex = next.indexOf('## Todo')
-    expect(noteIndex).toBeGreaterThan(mlIndex)
-    expect(noteIndex).toBeLessThan(todoIndex)
+    expect(noteIndex).toBeGreaterThan(todoIndex)
+    expect(todoIndex).toBeGreaterThan(mlIndex)
+    // Todo 模块内容原样保留，NOTE 紧随其后
+    expect(next).toContain('## Todo\n\n- [ ] x\n\n## NOTE')
     expect(next).toContain('### 14:30 · 完成 note 命令')
     expect(next).toContain('- 写核心逻辑')
     expect(next).toContain('- 写测试')
+  })
+
+  it('新建模块：没有 ## Todo 时退回 ## MemoryLeak 之后', () => {
+    const content = '## MemoryLeak\n\n- 上午的记录\n'
+    const next = insertNoteSection(content, { mode: 'daily', date: '2026-02-06', time: '14:30', summary: 's', items: ['a'] })
+    expect(next.indexOf('## MemoryLeak')).toBeLessThan(next.indexOf('## NOTE'))
+    expect(next).toContain('## MemoryLeak\n\n- 上午的记录\n\n## NOTE')
   })
 
   it('已有模块：新小节追加到模块尾部，已有小节一行不动', () => {
@@ -573,13 +582,32 @@ describe('collectNoteItems（区间定位与投影）', () => {
     expect(items[0].text).toBe('新消息（这一段）')
   })
 
-  it('上一个 note 没有 done（执行中断）：边界回退到 run 本身', () => {
+  it('上一个 note 没有收尾（中断/停摆）：不构成边界，对话留给下次重试', () => {
     nextSeq = 1
     const events = [userMessage('旧'), noteRun('cmd-1'), userMessage('新'), noteRun('cmd-cur')]
     const { items, hasBoundary } = collectNoteItems(sessionOf(events), 'cmd-cur')
+    expect(hasBoundary).toBe(false)
+    expect(items).toHaveLength(2)
+    expect(items[0].text).toBe('旧')
+    expect(items[1].text).toBe('新')
+  })
+
+  it('上一个 note 失败收尾（error/取消）：回退到更早的成功 note，失败那次身前的对话不丢', () => {
+    nextSeq = 1
+    const events = [
+      userMessage('更早'),
+      noteRun('cmd-1'),
+      noteDone('cmd-1'),
+      userMessage('A'),
+      noteRun('cmd-2'),
+      noteDone('cmd-2', 'error'), // 停摆/取消的那次
+      userMessage('B'),
+      noteRun('cmd-cur'),
+    ]
+    const { items, hasBoundary } = collectNoteItems(sessionOf(events), 'cmd-cur')
     expect(hasBoundary).toBe(true)
-    expect(items).toHaveLength(1)
-    expect(items[0].text).toBe('新')
+    expect(items).toHaveLength(2)
+    expect(items.map((item) => item.text)).toEqual(['A', 'B'])
   })
 
   it('其他命令不构成边界；非 note 的 /ml 用法不算（args 前缀）', () => {
@@ -611,15 +639,35 @@ describe('collectNoteItems（区间定位与投影）', () => {
     expect(items[0].text).toBe('真实消息')
   })
 
-  it('找不到当前 commandId（异常调用）：按日志末尾处理，日志内最后一个 note 仍是边界', () => {
+  it('找不到当前 commandId（异常调用）：按日志末尾处理；未收尾的 note 不算边界', () => {
     nextSeq = 1
     // 防御分支：dsh-commands 保证 handler 调用前 run 已入日志，这里模拟
-    // 理论上不可能的失配 —— 语义与正常路径一致：最后一个 note run 即边界。
-    const withNote = [userMessage('旧'), noteRun('cmd-1'), userMessage('新')]
+    // 理论上不可能的失配 —— 语义与正常路径一致：只有成功收尾的 note 是边界。
+    const withNote = [userMessage('旧'), noteRun('cmd-1'), noteDone('cmd-1'), userMessage('新')]
     expect(collectNoteItems(sessionOf(withNote), 'cmd-unknown')).toMatchObject({ hasBoundary: true, items: [{ role: 'user', text: '新' }] })
+    nextSeq = 1
+    const unfinished = [userMessage('旧'), noteRun('cmd-1'), userMessage('新')]
+    expect(collectNoteItems(sessionOf(unfinished), 'cmd-unknown')).toMatchObject({ hasBoundary: false, items: [{ role: 'user', text: '旧' }, { role: 'user', text: '新' }] })
     nextSeq = 1
     const noNote = [userMessage('消息')]
     expect(collectNoteItems(sessionOf(noNote), 'cmd-unknown')).toMatchObject({ hasBoundary: false, items: [{ role: 'user', text: '消息' }] })
+  })
+
+  it('上一轮 /ml note 的合成写入结果（ml_note_write）不是对话：不进下个区间；真实工具结果照常收录', () => {
+    nextSeq = 1
+    const events = [
+      userMessage('A'),
+      toolCall('syn-1', 'ml_note_write'),
+      toolResult('syn-1', '已创建'),
+      toolCall('real-1', 'read'),
+      toolResult('real-1', '真实文件内容'),
+      noteRun('cmd-cur'),
+    ]
+    const { items } = collectNoteItems(sessionOf(events), 'cmd-cur')
+    expect(items).toHaveLength(2) // 用户消息 + 真实工具结果；合成结果被排除
+    expect(items[0]).toMatchObject({ role: 'user', text: 'A' })
+    expect(items[1]).toMatchObject({ role: 'tool', name: 'read', text: '真实文件内容' })
+    expect(items.some((item) => item.name === 'ml_note_write')).toBe(false)
   })
 })
 
@@ -675,6 +723,50 @@ describe('streamNoteCompletion（压缩调用）', () => {
     await expect(streamNoteCompletion(bad, base)).rejects.toThrow(NoteLlmError)
     const truncated = { llm: fakeLlm([{ type: 'finish', reason: { kind: 'max-tokens' } }]) }
     await expect(streamNoteCompletion(truncated, base)).rejects.toThrow(/截断/)
+  })
+
+  it('停摆看门狗：无任何输出超过首字超时 → NoteLlmError（不再永久挂起）', async () => {
+    // 复现 2026-09-01 的卡死形态：请求发出后 provider 无响应也不报错
+    const stalled = {
+      llm: {
+        async *stream() {
+          await new Promise(() => {}) // 永不产出
+        },
+      },
+    }
+    await expect(
+      streamNoteCompletion(stalled, { ...base, firstChunkTimeoutMs: 40, idleChunkTimeoutMs: 40 }),
+    ).rejects.toThrow(/首字/)
+  })
+
+  it('停摆看门狗：流中途断流超过空闲超时 → NoteLlmError', async () => {
+    const halfStalled = {
+      llm: {
+        async *stream() {
+          yield { type: 'text-delta', index: 0, text: '说到一半' }
+          await new Promise(() => {}) // 然后停摆
+        },
+      },
+    }
+    await expect(
+      streamNoteCompletion(halfStalled, { ...base, firstChunkTimeoutMs: 1000, idleChunkTimeoutMs: 40 }),
+    ).rejects.toThrow(/流中途/)
+  })
+
+  it('停摆看门狗：chunk 间隔小于空闲超时的正常流不受影响', async () => {
+    const slow = {
+      llm: {
+        async *stream() {
+          yield { type: 'text-delta', index: 0, text: 'a' }
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          yield { type: 'text-delta', index: 0, text: 'b' }
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        },
+      },
+    }
+    const result = await streamNoteCompletion(slow, { ...base, firstChunkTimeoutMs: 1000, idleChunkTimeoutMs: 1000 })
+    expect(result.text).toBe('ab')
   })
 })
 
@@ -1139,6 +1231,109 @@ describe('runNoteCommand 流式过程（assistant-step 合成事件）', () => {
     const { items } = collectNoteItems(sessionOf(base), 'cmd-next')
     expect(items).toHaveLength(1)
     expect(items[0].text).toBe('新消息')
+  })
+
+  it('思考转发：reasoning-delta 流式显示在块位 0，正文在块位 1（与普通回复的块结构一致）', async () => {
+    nextSeq = 1
+    const base = [userMessage('做了调研'), noteRun('cmd-think')]
+    const { session, appended } = liveSessionOf(base)
+    const ctx = {
+      llm: fakeLlm([
+        { type: 'reasoning-delta', index: 0, text: '先想想摘要怎么写' },
+        { type: 'text-delta', index: 0, text: MODEL_OUTPUT },
+        { type: 'reasoning-delta', index: 0, text: '收尾检查一遍字段' },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ]),
+    }
+    const result = await runNoteCommand(ctx, { session }, { commandId: 'cmd-think', signal: new AbortController().signal }, vault, SETTINGS)
+    expect(result.kind).toBe('success')
+    const reasoning = appended.filter((entry) => entry.type === 'assistant/chunk' && entry.data.chunk.type === 'reasoning-delta')
+    expect(reasoning.length).toBeGreaterThanOrEqual(2)
+    const texts = appended.filter((entry) => entry.type === 'assistant/chunk' && entry.data.chunk.type === 'text-delta')
+    expect(texts.length).toBeGreaterThan(0)
+    for (const entry of reasoning) {
+      expect(entry.data.chunk.index).toBe(0)
+      expect(entry.data.chunk.text).not.toContain('{')
+    }
+    for (const entry of texts) expect(entry.data.chunk.index).toBe(1)
+  })
+
+  it('写入卡片：tool/call 即时出现，settle 消息携带一一对应的 tool-call 块，随后按序补落 tool/result（surface append、溯源 call seq）', async () => {
+    nextSeq = 1
+    const base = [userMessage('做了 llm 调研'), assistantMessage('结论如下'), noteRun('cmd-cards')]
+    const { session, appended } = liveSessionOf(base)
+    const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: MODEL_OUTPUT }, { type: 'finish', reason: { kind: 'stop' } }]) }
+    const result = await runNoteCommand(ctx, { session }, { commandId: 'cmd-cards', signal: new AbortController().signal }, vault, SETTINGS)
+    expect(result.kind).toBe('success')
+
+    const callEvents = appended.filter((entry) => entry.type === 'tool/call')
+    const resultEvents = appended.filter((entry) => entry.type === 'tool/result')
+    const settle = appended.find((entry) => entry.type === 'assistant/message')
+    expect(settle).toBeDefined()
+    // 2 个知识条目 + 3 张结构化表（databases/credentials/glossary）+ index + 日志 = 7 次写入，全部开卡
+    expect(callEvents).toHaveLength(7)
+    expect(resultEvents).toHaveLength(7)
+
+    // 卡片在写入进行中即出现（先于回执消息；转写上 log-only，不进 surface）
+    expect(callEvents[0].seq).toBeLessThan(settle.seq)
+    for (const call of callEvents) {
+      expect(call.surfaceOp).toBeUndefined()
+      expect(call.data.turn).toBe(0)
+      expect(Number.isSafeInteger(call.data.step)).toBe(true)
+      expect(call.data.name).toBe('ml_note_write')
+      expect(() => JSON.parse(call.data.arguments)).not.toThrow()
+      expect(JSON.parse(call.data.arguments)).toMatchObject({ file: expect.any(String) })
+    }
+
+    // 消息内容：文本回执在前，tool-call 块与调用一一对应（同序同 id）
+    expect(settle.data.message.content[0].type).toBe('text')
+    expect(settle.surfaceOp).toBe('append')
+    const blocks = settle.data.message.content.filter((block) => block.type === 'tool-call')
+    expect(blocks).toHaveLength(callEvents.length)
+    expect(blocks.map((block) => block.id)).toEqual(callEvents.map((call) => call.data.callId))
+    expect(blocks.every((block) => block.name === 'ml_note_write')).toBe(true)
+
+    // 结果在消息之后补落（转写合法性：tool 消息必须跟在带 tool_calls 的消息后）
+    expect(resultEvents[0].seq).toBeGreaterThan(settle.seq)
+    expect(resultEvents.map((entry) => entry.data.message.content[0].toolCallId)).toEqual(callEvents.map((call) => call.data.callId))
+    for (const entry of resultEvents) {
+      expect(entry.surfaceOp).toBe('append')
+      expect(entry.data.turn).toBe(0)
+      expect(entry.data.message.role).toBe('user')
+      expect(entry.data.message.source).toEqual({ kind: 'tool', callId: entry.data.message.content[0].toolCallId })
+      expect(entry.data.message.content[0].type).toBe('tool-result')
+      expect(entry.data.message.content[0].isError).toBe(false)
+      const call = callEvents.find((candidate) => candidate.data.callId === entry.data.message.content[0].toolCallId)
+      expect(entry.sourceEventSeqs).toEqual([call.seq])
+    }
+
+    // step/end 收尾在一切之后（无悬挂 open step）
+    const closeEnd = appended.filter((entry) => entry.type === 'step/end')
+    expect(closeEnd).toHaveLength(1)
+    expect(closeEnd[0].seq).toBeGreaterThan(resultEvents.at(-1).seq)
+  })
+
+  it('落盘失败：无回执消息、无 tool/result，已开的卡片由 step/end 收尾为中断（转写不残留孤儿）', async () => {
+    const broken = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-note-broken-'))
+    try {
+      nextSeq = 1
+      // 让**第二个**知识条目的落盘路径变成目录 → 首条开卡写入成功后，第二条在读取时炸
+      await mkdir(join(broken, MOMENTO_DIR), { recursive: true })
+      await mkdir(join(broken, MOMENTO_DIR, `${slugify('command/run 边界')}.md`))
+      const base = [userMessage('做了 llm 调研'), noteRun('cmd-boom')]
+      const { session, appended } = liveSessionOf(base)
+      const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: MODEL_OUTPUT }, { type: 'finish', reason: { kind: 'stop' } }]) }
+      await expect(
+        runNoteCommand(ctx, { session }, { commandId: 'cmd-boom', signal: new AbortController().signal }, broken, SETTINGS),
+      ).rejects.toThrow(/失败：EISDIR/)
+
+      expect(appended.some((entry) => entry.type === 'tool/call')).toBe(true) // 首条卡片已开
+      expect(appended.filter((entry) => entry.type === 'assistant/message')).toHaveLength(0) // 无回执
+      expect(appended.filter((entry) => entry.type === 'tool/result')).toHaveLength(0) // 无结果事件
+      expect(appended.filter((entry) => entry.type === 'step/end')).toHaveLength(1) // interrupt 收尾
+    } finally {
+      await rm(broken, { recursive: true, force: true })
+    }
   })
 })
 

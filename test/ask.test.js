@@ -198,6 +198,24 @@ describe('runAskCommand（端到端）', () => {
     expect(result.text).toContain('777 tokens')
   })
 
+  it('思考转发：reasoning-delta 以思考块（块位 0）流式显示，回答正文在块位 1', async () => {
+    const ctx = { llm: fakeLlm([
+      { type: 'reasoning-delta', index: 0, text: '用户问端口，去 databases.md 找' },
+      { type: 'text-delta', index: 0, text: '生产主库端口 ' },
+      { type: 'text-delta', index: 0, text: '**5432**。' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ]) }
+    const { session, appended } = liveSession([{ seq: 1, type: 'command/run', data: { commandId: 'cmd-think', name: 'ml' } }])
+    const result = await runAskCommand(ctx, { session }, { commandId: 'cmd-think', signal: new AbortController().signal }, vault, '主库端口是多少')
+    expect(result.kind).toBe('success')
+    const reasoning = appended.filter((e) => e.type === 'assistant/chunk' && e.data.chunk.type === 'reasoning-delta')
+    expect(reasoning).toHaveLength(1)
+    expect(reasoning[0].data.chunk.index).toBe(0)
+    expect(reasoning[0].data.chunk.text).toContain('去 databases.md 找')
+    const texts = appended.filter((e) => e.type === 'assistant/chunk' && e.data.chunk.type === 'text-delta')
+    for (const entry of texts) expect(entry.data.chunk.index).toBe(1)
+  })
+
   it('无当前模型 → 报错（不调 LLM）', async () => {
     let called = 0
     const ctx = { llm: { async *stream() { called += 1 } } }

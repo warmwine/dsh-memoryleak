@@ -25,7 +25,7 @@ import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
 import { MAX_POSTPONE_DAYS } from './formats/memoryleak-todo.js'
 
-export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done|cancelled] [关键词] · /ml todo d <序号> · /ml todo c <序号> · /ml todo p <序号> [天数] · /ml todo u · /ml note · /ml ask <问题> · /ml view [文件名片段] · /ml help'
+export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done|cancelled] [关键词] · /ml todo d <序号> · /ml todo c <序号> · /ml todo p <序号> [天数] · /ml todo u · /ml note · /ml ask <问题> · /ml mail [read|setup] · /ml view [文件名片段] · /ml help'
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
@@ -39,6 +39,8 @@ export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /m
  *   family: 'note'
  * } | {
  *   family: 'ask', text: string
+ * } | {
+ *   family: 'mail', action: 'read' | 'setup' | null
  * } | {
  *   family: 'view', text: string | null
  * } | {
@@ -91,6 +93,18 @@ export function parseMlArgs(rawInput) {
     const text = [action, ...rest].filter((token) => token !== undefined && token !== '').join(' ')
     if (text === '') throw new TodoUsageError('用法：/ml ask <问题>（拿 Vault 里的笔记当资料向当前模型提问）')
     return { family: 'ask', text }
+  }
+  if (family === 'mail') {
+    if (action === undefined) return { family: 'mail', action: null }
+    if (action === 'read') {
+      if (rest.length > 0) throw new TodoUsageError('用法：/ml mail read（不带参数；从上次读完的时刻增量阅读，首次默认当天）')
+      return { family: 'mail', action: 'read' }
+    }
+    if (action === 'setup') {
+      if (rest.length > 0) throw new TodoUsageError('用法：/ml mail setup（不带参数；重新走一遍邮箱配置问答）')
+      return { family: 'mail', action: 'setup' }
+    }
+    throw new TodoUsageError(['未知操作 "' + action + '"。/ml mail 的子命令：', '· /ml mail —— 邮箱状态（未配置时进入设置引导）', '· /ml mail read —— 增量阅读新邮件并提取待办/待阅（花 token）', '· /ml mail setup —— 重新配置邮箱账号'].join('\n'))
   }
   if (family !== 'todo') {
     return { family: 'journal', text: tokens.join(' ') }
@@ -167,7 +181,8 @@ export function renderMlHelp() {
     '/ml todo add <待办内容>（简写 /ml todo n 或 /ml todo a）',
     '  新增结构化待办：固定表单选类型 deadline/sleep/anytime 与重要程度',
     '  紧急/中等/低（deadline/sleep 再问日期），写入 ## Todo 模块；',
-    '  表单支持键盘：数字键选类型、字母键选重要程度（如 u=紧急）',
+    '  表单支持键盘：数字 1/2/3 或字母 d/s/a 选类型，u/m/l 选重要程度，',
+    '  日期卡数字 1-4 选今天/明天/本周/本月、←→ 切月',
     '/ml todo list [all|open|done|cancelled] [关键词]（简写 /ml todo l；省略操作同为 list）',
     '  列出待办：默认隐藏未唤醒的 sleep（到日自动唤醒并转写 active）与',
     '  已取消项（cancelled 过滤词可单看）；条目带序号，供 d/c/p 寻址',
@@ -190,6 +205,17 @@ export function renderMlHelp() {
     '  /ml note 的反向：把 Vault 当资料库向当前模型提问（只读，不写 Vault）。',
     '  自动汇集 MOMENTO 知识文件 / 结构化登记 / 近期日志作上下文，',
     '  按问题关键词挑最相关的资料，回答流式显示在会话里并标注来源文件',
+    '/ml mail',
+    '  工作邮件：未配置时弹出设置引导（IMAP 服务器 / 账号 / 密码或授权码，',
+    '  登陆方式与完整选项在 GUI 设置 → MemoryLeak）；已配置时显示邮箱状态',
+    '/ml mail read',
+    '  增量阅读邮件：只下载「上次 read 结束 → 现在」的新邮件（首次默认当天）',
+    '  到系统临时目录（绝不写进 Vault 或工作区，用完即删；下载与清理全程',
+    '  无模型调用），再用当前模型分析并提取重要事件 / 待办 / 待阅事项。',
+    '  读完把结束时刻记进 Vault 设置，下次从这里继续',
+    '/ml mail setup',
+    '  重新走一遍邮箱配置问答（改密码 / 换服务器也用它；配置也可在 GUI',
+    '  设置 → MemoryLeak 中填写）',
     '/ml view [文件名片段]（简写 /ml v；无参数 = 当前日志/周志）',
     '  显示文件内容：片段按 VSCode Ctrl+P 风格模糊匹配工作区文件；',
     '  从命令菜单选择 /ml 则弹出快速打开面板（搜索/↑↓/Enter）',

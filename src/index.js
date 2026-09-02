@@ -37,6 +37,7 @@ import { resolveViewTarget } from './core/fuzzy.js'
 import { prepareVaultDir, resolveEffectiveSettings, writeVaultSettingsFile, VAULT_SETTINGS_FILENAME } from './vault.js'
 import { runNoteCommand, NoteLlmError } from './note.js'
 import { runAskCommand } from './ask.js'
+import { runMailCommand, MailError } from './mail.js'
 import { NoteParseError } from './core/note.js'
 
 /**
@@ -100,7 +101,7 @@ export function apply(ctx) {
       ctx.commands.register({
         name: 'ml',
         description: 'MemoryLeak 记事本 · 输入 /ml help 查看全部命令',
-        input: { hint: '<文本> / todo 子命令 / note / view / help' },
+        input: { hint: '<文本> / todo 子命令 / note / ask / mail / view / help' },
         handler: wrappedHandler,
       }),
     'memoryleak: /ml command',
@@ -145,6 +146,9 @@ export function apply(ctx) {
     }
     if (parsed.family === 'ask') {
       return runAskCommand(ctx, agent, { commandId, signal }, cwd, parsed.text)
+    }
+    if (parsed.family === 'mail') {
+      return runMailCommand(ctx, agent, { commandId, signal }, parsed, cwd, settings)
     }
     if (parsed.family === 'view') {
       if (parsed.text === null) {
@@ -506,6 +510,7 @@ export function apply(ctx) {
       if (error instanceof JournalIoError) return { kind: 'error', text: `日志写入失败：${error.message}` }
       if (error instanceof NoteParseError) return { kind: 'error', text: `模型输出无法解析：${error.message}` }
       if (error instanceof NoteLlmError) return { kind: 'error', text: `压缩调用失败：${error.message}` }
+      if (error instanceof MailError) return { kind: 'error', text: `邮件操作失败：${error.message}` }
       if (invocation.signal?.aborted) return { kind: 'error', text: '/ml note 已取消。' }
       throw error
     })

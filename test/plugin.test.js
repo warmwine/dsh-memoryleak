@@ -172,7 +172,7 @@ describe('宿主插件装配（apply）', () => {
     // inject 声明里 —— Guard 在属性访问时拦截，桩 ctx 无 Guard 测不出来。
     const hostSources = (
       await Promise.all(
-        ['src/index.js', 'src/routes.js', 'src/note.js'].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')),
+        ['src/index.js', 'src/routes.js', 'src/note.js', 'src/ask.js', 'src/mail.js'].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')),
       )
     ).join('\n')
     const accessed = new Set(hostSources.match(/\bctx\.\w+/g) ?? [])
@@ -194,7 +194,7 @@ describe('宿主插件装配（apply）', () => {
     expect(command).toBeDefined()
     // 注册描述保持短并导向 /ml help（汇总说明统一由 help 提供）
     expect(command.description).toBe('MemoryLeak 记事本 · 输入 /ml help 查看全部命令')
-    expect(command.input.hint).toBe('<文本> / todo 子命令 / note / view / help')
+    expect(command.input.hint).toBe('<文本> / todo 子命令 / note / ask / mail / view / help')
   })
 
   it('/ml help：返回汇总说明（无需工作区绑定）', async () => {
@@ -326,7 +326,7 @@ describe('宿主插件装配（apply）', () => {
 
   it('vault 未设置：除 help/init 外的命令直接报错并提示 /ml init（不弹引导）', async () => {
     await host.settings.update('memoryleak', { vault: '' })
-    for (const rawInput of ['todo', 'todo list', 'view', '随便记一句']) {
+    for (const rawInput of ['todo', 'todo list', 'view', 'mail', 'mail read', '随便记一句']) {
       const result = await command.handler({ agent: { session: { header: {} } }, rawInput, signal: new AbortController().signal })
       expect(result.kind, rawInput).toBe('error')
       expect(result.text, rawInput).toContain('/ml init')
@@ -1397,5 +1397,38 @@ describe('Vault 与 /ml init（端到端）', () => {
     const vhost = createFakeHost({})
     apply(vhost.ctx)
     expect(vhost.routes.some((entry) => entry.path === '/api/memoryleak/pick-directory')).toBe(false)
+  })
+
+  it('/ml mail：未配置 + vault 已设置 → 弹三问引导；空答案明确报不完整（不触网）', async () => {
+    const mhost = createFakeHost({}) // 预置答案为空 → 配置不完整，试登陆不会发生
+    apply(mhost.ctx)
+    const mcommand = mhost.commands.find((definition) => definition.name === 'ml')
+    await mhost.settings.update('memoryleak', { vault: workspace })
+    const result = await mcommand.handler({ agent: { id: 'a', session: { header: { cwd: workspace } } }, rawInput: 'mail', signal: signal() })
+    expect(mhost.askLog).toHaveLength(1)
+    expect(mhost.askLog[0].questions.map((question) => question.id)).toEqual(['ml-mail-host', 'ml-mail-user', 'ml-mail-secret'])
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('配置不完整')
+  })
+
+  it('/ml mail read：已配置但会话未路由模型 → 报错先发消息（下载尚未开始，不触网）', async () => {
+    const mhost = createFakeHost({})
+    apply(mhost.ctx)
+    const mcommand = mhost.commands.find((definition) => definition.name === 'ml')
+    await mhost.settings.update('memoryleak', { vault: workspace, mailHost: 'imap.test.example', mailUser: 'a@b.c', mailPassword: 'secret' })
+    const result = await mcommand.handler({ agent: { id: 'a', session: { header: { cwd: workspace } } }, rawInput: 'mail read', signal: signal() })
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('先发一条消息')
+    expect(mhost.askLog).toHaveLength(0) // 已配置：read 不弹引导
+  })
+
+  it('/ml mail 用法错误走通用错误通道', async () => {
+    const mhost = createFakeHost({})
+    apply(mhost.ctx)
+    const mcommand = mhost.commands.find((definition) => definition.name === 'ml')
+    await mhost.settings.update('memoryleak', { vault: workspace, mailHost: 'imap.test.example', mailUser: 'a@b.c', mailPassword: 'secret' })
+    const result = await mcommand.handler({ agent: { id: 'a', session: { header: { cwd: workspace } } }, rawInput: 'mail send', signal: signal() })
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('未知操作')
   })
 })

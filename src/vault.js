@@ -22,11 +22,15 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, resolve } from 'node:path'
 import YAML from 'yaml'
-import { resolveMemoryleakSettings } from './settings-schema.js'
+import { resolveMemoryleakSettings, MAIL_SETTING_KEYS } from './settings-schema.js'
 import { NOTE_CONFIG_KEYS } from './core/note.js'
 
 /** vault 内设置文件名（相对 vault 根）。 */
 export const VAULT_SETTINGS_FILENAME = '.memoryleak.yaml'
+
+/** vault 文件里「只住 vault 层」的键：note 配置 + /ml mail 的读信状态。
+ *  双写同步时从现有文件原样保留，不被全局段覆盖清掉。 */
+const VAULT_ONLY_KEYS = [...NOTE_CONFIG_KEYS, 'mailState']
 
 /** vault 目录路径清理后允许的最大长度（与 schema 的 vault 约束一致）。 */
 const MAX_VAULT_PATH = 1024
@@ -95,7 +99,7 @@ export async function readVaultSettings(vaultDir) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const section = {}
   for (const key of Object.keys(parsed)) {
-    if (key === 'vault' || NOTE_CONFIG_KEYS.includes(key)) continue
+    if (key === 'vault' || VAULT_ONLY_KEYS.includes(key) || MAIL_SETTING_KEYS.includes(key)) continue
     if (parsed[key] !== null && parsed[key] !== undefined) section[key] = parsed[key]
   }
   return section
@@ -138,12 +142,19 @@ export async function resolveEffectiveSettings(globalSection) {
  */
 export async function writeVaultSettingsFile(vaultDir, section) {
   const target = resolve(vaultDir, VAULT_SETTINGS_FILENAME)
-  const { vault: _vault, ...rest } = section
-  // vault 限定键：从现有文件带过来（GUI 保存不会冲掉 note 配置）
+  // 剔除 vault 键（路径只住全局层）与 mail 账号键（凭证不进 vault、
+  // 不随目录迁移——账号配置只有全局层一个事实来源）。
+  const rest = {}
+  for (const [key, value] of Object.entries(section)) {
+    if (key === 'vault' || MAIL_SETTING_KEYS.includes(key)) continue
+    rest[key] = value
+  }
+  // vault 限定键（note 配置 + mailState）：从现有文件带过来（GUI 保存
+  // 不会冲掉 note 配置与读信进度）。
   try {
     const parsed = YAML.parse(await readFile(target, 'utf8'))
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      for (const key of NOTE_CONFIG_KEYS) {
+      for (const key of VAULT_ONLY_KEYS) {
         const value = parsed[key]
         if (value !== null && value !== undefined) rest[key] = value
       }
@@ -152,11 +163,57 @@ export async function writeVaultSettingsFile(vaultDir, section) {
     // 现有文件缺失/损坏：无键可保留
   }
   const hasNoteKeys = Object.keys(rest).some((key) => NOTE_CONFIG_KEYS.includes(key))
-  const hint = hasNoteKeys
-    ? '# noteStructured / noteSkill / noteBackup 为 vault 限定配置（仅本文件有效，详见 README）；同步保存会原样保留\n'
-    : ''
-  const body = '# MemoryLeak vault 设置（与 GUI 保存同步；此文件的键覆盖 ~/.dsh/settings.yaml 的 memoryleak: 段，vault 路径除外）\n' + hint + YAML.stringify(rest)
+  const hasMailState = 'mailState' in rest
+  const hints = []
+  if (hasNoteKeys) hints.push('# noteStructured / noteSkill / noteBackup 为 vault 限定配置（仅本文件有效，详见 README）；同步保存会原样保留')
+  if (hasMailState) hints.push('# mailState（/ml mail 的读信进度）为 vault 限定状态；同步保存会原样保留')
+  const head =
+    '# MemoryLeak vault 设置（与 GUI 保存同步；此文件的键覆盖 ~/.dsh/settings.yaml 的 memoryleak: 段，vault 路径与邮箱账号除外）\n'
+  const body = head + (hints.length > 0 ? hints.join('\n') + '\n' : '') + YAML.stringify(rest)
   await writeFile(target, body, 'utf8')
+}
+
+/**
+ * 读 vault 限定的 /ml mail 读信状态（mailState.lastReadEnd，ISO 字符串）。
+ * 文件缺失 / 解析失败 / 形状不对一律返回 null（视为从未读过，回退当天）。
+ *
+ * @param {string} vaultDir vault 绝对路径
+ * @returns {Promise<string | null>}
+ */
+export async function readVaultMailStateEnd(vaultDir) {
+  try {
+    const parsed = YAML.parse(await readFile(resolve(vaultDir, VAULT_SETTINGS_FILENAME), 'utf8'))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const end = parsed.mailState?.lastReadEnd
+    return typeof end === 'string' && end.trim() !== '' ? end.trim() : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 写 /ml mail 读信进度（mailState.lastReadEnd）：读 vault 设置文件 → 只改
+ * mailState 键 → 原样写回（其余键全部保留，含 note 配置与注释性结构）。
+ * 文件不存在时新建。读信进度只住 vault 层——换机器拷走 Vault，增量进度
+ * 跟着走。
+ *
+ * @param {string} vaultDir vault 绝对路径
+ * @param {string} lastReadEndIso 结束时刻（new Date(...).toISOString()）
+ */
+export async function writeVaultMailStateEnd(vaultDir, lastReadEndIso) {
+  const target = resolve(vaultDir, VAULT_SETTINGS_FILENAME)
+  let parsed = {}
+  try {
+    const existing = YAML.parse(await readFile(target, 'utf8'))
+    if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) parsed = existing
+  } catch {
+    parsed = {} // 文件缺失/损坏：从空对象重建（其余内容本就无法解析）
+  }
+  parsed.mailState = { ...(parsed.mailState ?? {}), lastReadEnd: lastReadEndIso }
+  const head =
+    '# MemoryLeak vault 设置（与 GUI 保存同步；此文件的键覆盖 ~/.dsh/settings.yaml 的 memoryleak: 段，vault 路径与邮箱账号除外）\n' +
+    '# mailState（/ml mail 的读信进度）为 vault 限定状态；同步保存会原样保留\n'
+  await writeFile(target, head + YAML.stringify(parsed), 'utf8')
 }
 
 /**

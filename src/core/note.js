@@ -1673,7 +1673,9 @@ export function mergeSectionsDocument(content, target, modelRows, date) {
  *   周志模式：  ### yyyy-mm-dd HH:mm · 摘要
  *   小节体：    - 工作记录逐条
  *
- * 模块不存在时建在 ## MemoryLeak 模块之后（无则文件头部锚点）。
+ * 模块不存在时建在 **## Todo 模块之后**（无 Todo 才退回 ## MemoryLeak
+ * 模块之后；再无则文件头部锚点）——NOTE 是收尾沉淀，排在流水账与待办
+ * 之后，绝不插到日志与 Todo 中间。
  *
  * @param {string} content 日志文件当前内容
  * @param {{ mode: 'daily' | 'weekly', date: string, time: string, summary: string, items: string[] }} input
@@ -1697,11 +1699,15 @@ export function insertNoteSection(content, { mode, date, time, summary, items })
     return `${lines.join('\n')}\n`
   }
 
-  // 无 ## NOTE：建在 ## MemoryLeak 模块之后
-  const mlIndex = lines.findIndex((line) => /^##\s*MemoryLeak\s*$/.test(line))
+  // 无 ## NOTE：建在 ## Todo 模块之后（无 Todo 才退回 ## MemoryLeak 之后；
+  // Todo 标题匹配与 core/journal 的 insertTodoLine 同款，大小写兼容）
+  const todoIndex = lines.findIndex((line) => /^##\s*todo\s*$/i.test(line))
+  const anchorIndex = todoIndex !== -1
+    ? todoIndex
+    : lines.findIndex((line) => /^##\s*MemoryLeak\s*$/.test(line))
   const section = ['## NOTE', ...appendBlock()]
-  if (mlIndex !== -1) {
-    const at = sectionEndIndex(lines, mlIndex)
+  if (anchorIndex !== -1) {
+    const at = sectionEndIndex(lines, anchorIndex)
     if (at > 0 && at < lines.length && lines[at - 1].trim() !== '') section.unshift('')
     else if (at === lines.length && lines[at - 1].trim() !== '') section.unshift('')
     lines.splice(at, 0, ...section)

@@ -59,6 +59,17 @@ window.__ModuleLoader__.load({
         journalMode: section.journalMode === "weekly" ? "weekly" : "daily",
         dailyTemplate: typeof section.dailyTemplate === "string" ? section.dailyTemplate : "",
         weeklyTemplate: typeof section.weeklyTemplate === "string" ? section.weeklyTemplate : "",
+        mailAuth: section.mailAuth === "xoauth2" ? "xoauth2" : "password",
+        mailHost: typeof section.mailHost === "string" ? section.mailHost : "",
+        mailPort: section.mailPort,
+        mailSecure: section.mailSecure !== false,
+        mailUser: typeof section.mailUser === "string" ? section.mailUser : "",
+        mailPassword: typeof section.mailPassword === "string" ? section.mailPassword : "",
+        mailToken: typeof section.mailToken === "string" ? section.mailToken : "",
+        mailFolder: typeof section.mailFolder === "string" && section.mailFolder !== "" ? section.mailFolder : "INBOX",
+        mailMaxEmails: section.mailMaxEmails,
+        mailCaPem: typeof section.mailCaPem === "string" ? section.mailCaPem : "",
+        mailTlsInsecure: section.mailTlsInsecure === true,
       };
     }
 
@@ -86,6 +97,27 @@ window.__ModuleLoader__.load({
       if (draft.journalMode !== "daily" && draft.journalMode !== "weekly") throw new Error("日志模式必须是 daily 或 weekly");
       if (typeof draft.dailyTemplate !== "string" || draft.dailyTemplate.length > 4096) throw new Error("日志模板必须是 4096 字符以内的文本");
       if (typeof draft.weeklyTemplate !== "string" || draft.weeklyTemplate.length > 4096) throw new Error("周志模板必须是 4096 字符以内的文本");
+      // —— /ml mail（可整体留空 = 未配置）——
+      const mailAuth = draft.mailAuth === "xoauth2" ? "xoauth2" : "password";
+      const mailHost = draft.mailHost.trim().toLowerCase();
+      const mailUser = draft.mailUser.trim();
+      const mailPassword = draft.mailPassword;
+      const mailToken = draft.mailToken;
+      const mailFolder = draft.mailFolder.trim() || "INBOX";
+      const mailPort = Number(draft.mailPort);
+      const mailMaxEmails = Number(draft.mailMaxEmails);
+      if (mailHost !== "" && !/^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$/.test(mailHost)) {
+        throw new Error("IMAP 服务器只填主机名或 IP（不带 imaps:// 前缀与端口），如 imap.example.com");
+      }
+      if (mailHost.length > 255) throw new Error("IMAP 服务器地址过长");
+      if (mailUser.length > 255) throw new Error("邮箱账号过长");
+      if (mailPassword.length > 1024) throw new Error("密码/授权码过长");
+      if (mailToken.length > 4096) throw new Error("OAuth2 token 过长");
+      if (mailFolder.length > 255 || /\s/.test(mailFolder)) throw new Error("邮件目录名不能含空白且不超过 255 字符");
+      if (!Number.isInteger(mailPort) || mailPort < 1 || mailPort > 65535) throw new Error("IMAP 端口必须是 1..65535 的整数");
+      if (!Number.isInteger(mailMaxEmails) || mailMaxEmails < 1 || mailMaxEmails > 200) throw new Error("单次最多下载封数必须是 1..200 的整数");
+      const mailCaPem = typeof draft.mailCaPem === "string" ? draft.mailCaPem : "";
+      if (mailCaPem.length > 16384) throw new Error("信任的证书内容过长（最多 16384 字符）");
       return {
         vault,
         extensions,
@@ -97,15 +129,107 @@ window.__ModuleLoader__.load({
         journalMode: draft.journalMode,
         dailyTemplate: draft.dailyTemplate,
         weeklyTemplate: draft.weeklyTemplate,
+        mailAuth,
+        mailHost,
+        mailPort,
+        mailSecure: draft.mailSecure === true,
+        mailUser,
+        mailPassword,
+        mailToken,
+        mailFolder,
+        mailMaxEmails,
+        mailCaPem,
+        mailTlsInsecure: draft.mailTlsInsecure === true,
       };
     }
 
     function NotesSettingsPage({ pickDirectory }) {
       const [draft, setDraft] = React.useState(null);
-      const [revision, setRevision] = React.useState(null);
       const [formats, setFormats] = React.useState([]);
-      const [message, setMessage] = React.useState(null); // { kind: 'ok'|'error', text }
+      const [status, setStatus] = React.useState(null); // { kind: 'ok'|'error', text }
       const [busy, setBusy] = React.useState(false);
+      // —— 自动保存机制 ——
+      // draftRef 永远持最新草稿；editsRef 是编辑计数（防止「保存返回时把
+      // 用户保存期间的继续输入顶掉」——只有计数没变才回填服务端值）；
+      // 600ms 防抖 + 链式串行 POST（整段替换），与上次已存内容相同则跳过；
+      // 非法输入不落盘，红色「未保存：原因」就地提示，改到合法即自动续存。
+      const draftRef = React.useRef(null);
+      const revisionRef = React.useRef(null);
+      const editsRef = React.useRef(0);
+      const saveTimer = React.useRef(null);
+      const chainRef = React.useRef(Promise.resolve());
+      const lastSavedRef = React.useRef(null);
+
+      const applyDraft = (next) => {
+        draftRef.current = next;
+        setDraft(next);
+      };
+      const timeNow = () => {
+        const d = new Date();
+        return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
+      };
+
+      const doSave = (section, okText) => {
+        const snapshot = JSON.stringify(section);
+        if (snapshot === lastSavedRef.current) return;
+        const editAt = editsRef.current;
+        chainRef.current = chainRef.current
+          .then(() => {
+            if (JSON.stringify(section) === lastSavedRef.current) return undefined;
+            const submit = (rev) => apiPost("/settings", rev === null || rev === undefined ? { section } : Object.assign({ section }, { expectedRevision: rev }));
+            return submit(revisionRef.current)
+              .catch((error) => {
+                if (error.status !== 409) throw error;
+                // 版本冲突（别的窗口/引导存过）：拉最新 revision 重试一次——
+                // 整段替换语义下覆盖即用户意图，不能把表单刷回旧值。
+                return apiGet("/settings").then((fresh) => {
+                  revisionRef.current = Number.isInteger(fresh.revision) ? fresh.revision : null;
+                  return submit(revisionRef.current);
+                });
+              })
+              .then((body) => {
+                revisionRef.current = Number.isInteger(body.revision) ? body.revision : revisionRef.current;
+                lastSavedRef.current = snapshot;
+                if (editsRef.current === editAt) applyDraft(draftOf(body.section));
+                setStatus({ kind: "ok", text: (okText ?? "已自动保存") + " · " + timeNow() });
+              });
+          })
+          .catch((error) => {
+            setStatus({ kind: "error", text: "自动保存失败：" + (error instanceof Error ? error.message : String(error)) });
+          });
+      };
+
+      const flushSave = () => {
+        const current = draftRef.current;
+        if (current === null) return;
+        let section;
+        try {
+          section = sectionOf(current);
+        } catch (error) {
+          setStatus({ kind: "error", text: "未保存：" + error.message });
+          return;
+        }
+        doSave(section);
+      };
+
+      const scheduleSave = () => {
+        if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => {
+          saveTimer.current = null;
+          flushSave();
+        }, 600);
+      };
+      // 卸载时把还在防抖里的改动立即落盘（fire-and-forget）。
+      React.useEffect(
+        () => () => {
+          if (saveTimer.current !== null) {
+            clearTimeout(saveTimer.current);
+            saveTimer.current = null;
+            flushSave();
+          }
+        },
+        [],
+      );
 
       const load = React.useCallback(() => {
         setBusy(true);
@@ -113,73 +237,52 @@ window.__ModuleLoader__.load({
           .then((results) => {
             const settings = results[0];
             if (!isPlainObject(settings.section)) throw new Error("宿主返回的设置段格式错误");
-            setDraft(draftOf(settings.section));
-            setRevision(Number.isInteger(settings.revision) ? settings.revision : null);
+            applyDraft(draftOf(settings.section));
+            revisionRef.current = Number.isInteger(settings.revision) ? settings.revision : null;
+            try {
+              lastSavedRef.current = JSON.stringify(sectionOf(draftOf(settings.section)));
+            } catch {
+              lastSavedRef.current = null;
+            }
             setFormats(Array.isArray(results[1].formats) ? results[1].formats : []);
-            setMessage(null);
+            setStatus(null);
           })
-          .catch((error) => setMessage({ kind: "error", text: "加载设置失败：" + error.message }))
+          .catch((error) => setStatus({ kind: "error", text: "加载设置失败：" + error.message }))
           .then(() => setBusy(false));
       }, []);
       React.useEffect(() => { load(); }, [load]);
 
-      const update = (patch) => setDraft((prev) => Object.assign({}, prev, patch));
-
-      // 统一的保存通道：持久化一份完整 section（整段替换），409 自动拉新
-      // revision 重试一次（设置页开着时 /ml init 会推进服务端 revision；
-      // 整段替换语义下覆盖即用户意图，不能把表单刷回旧值）。
-      const persist = (section, okText) => {
-        setBusy(true);
-        const submit = (expectedRevision) =>
-          apiPost("/settings", Object.assign({ section }, expectedRevision === null || expectedRevision === undefined ? {} : { expectedRevision }));
-        submit(revision)
-          .catch((error) => {
-            if (error.status !== 409) throw error;
-            return apiGet("/settings").then((fresh) => submit(Number.isInteger(fresh.revision) ? fresh.revision : null));
-          })
-          .then((body) => {
-            setDraft(draftOf(body.section));
-            setRevision(Number.isInteger(body.revision) ? body.revision : revision);
-            setMessage({ kind: "ok", text: okText });
-          })
-          .catch((error) => {
-            setMessage({ kind: "error", text: "保存失败：" + error.message });
-          })
-          .then(() => setBusy(false));
+      const update = (patch) => {
+        setDraft((prev) => {
+          const next = Object.assign({}, prev, patch);
+          draftRef.current = next;
+          editsRef.current += 1;
+          scheduleSave();
+          return next;
+        });
       };
 
-      const save = () => {
-        let section;
-        try {
-          section = sectionOf(draft);
-        } catch (error) {
-          setMessage({ kind: "error", text: error.message });
-          return;
-        }
-        persist(section, "已保存（全局与 Vault 内设置文件已同步）");
-      };
-
-      // 清除 = 立即生效：把当前表单（vault 置空）直接持久化，不等「保存」。
       const clearVault = () => {
         let section;
         try {
-          section = sectionOf(Object.assign({}, draft, { vault: "" }));
+          section = sectionOf(Object.assign({}, draftRef.current, { vault: "" }));
         } catch (error) {
-          setMessage({ kind: "error", text: "其他字段尚未合法，无法清除：" + error.message });
+          setStatus({ kind: "error", text: "其他字段尚未合法，无法清除：" + error.message });
           return;
         }
-        persist(section, "Vault 已清除（全局与 Vault 内设置文件已同步）");
+        doSave(section, "Vault 已清除（全局与 Vault 内设置文件已同步）");
       };
 
       const reset = () => {
         setBusy(true);
         apiPost("/settings/reset", {})
           .then((body) => {
-            setDraft(draftOf(body.section));
-            setRevision(Number.isInteger(body.revision) ? body.revision : revision);
-            setMessage({ kind: "ok", text: "已恢复默认" });
+            applyDraft(draftOf(body.section));
+            revisionRef.current = Number.isInteger(body.revision) ? body.revision : revisionRef.current;
+            lastSavedRef.current = null;
+            setStatus({ kind: "ok", text: "已恢复默认" });
           })
-          .catch((error) => setMessage({ kind: "error", text: "重置失败：" + error.message }))
+          .catch((error) => setStatus({ kind: "error", text: "重置失败：" + error.message }))
           .then(() => setBusy(false));
       };
 
@@ -193,11 +296,23 @@ window.__ModuleLoader__.load({
           .then((path) => {
             if (typeof path === "string" && path !== "") {
               update({ vault: path });
-              setMessage(null);
+              setStatus(null);
             }
           })
-          .catch((e) => setMessage({ kind: "error", text: "打开目录选择器失败：" + (e instanceof Error ? e.message : String(e)) }))
+          .catch((e) => setStatus({ kind: "error", text: "打开目录选择器失败：" + (e instanceof Error ? e.message : String(e)) }))
           .then(() => setPicking(false));
+      };
+
+      // 清除邮箱 = 立即生效：账号四项与证书/开关清空回默认，自动落盘。
+      const clearMail = () => {
+        let section;
+        try {
+          section = sectionOf(Object.assign({}, draftRef.current, { mailAuth: "password", mailHost: "", mailUser: "", mailPassword: "", mailToken: "", mailFolder: "INBOX", mailCaPem: "", mailTlsInsecure: false }));
+        } catch (error) {
+          setStatus({ kind: "error", text: "其他字段尚未合法，无法清除：" + error.message });
+          return;
+        }
+        doSave(section, "邮箱配置已清除（/ml mail 将重新进入设置引导）");
       };
 
       const rowStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: "1px solid rgba(128,128,128,.15)" };
@@ -215,7 +330,7 @@ window.__ModuleLoader__.load({
       if (draft === null) {
         return React.createElement("div", null,
           React.createElement("h3", { style: { margin: "4px 0 8px" } }, "MemoryLeak"),
-          React.createElement("p", null, message === null ? "正在加载设置…" : message.text));
+          React.createElement("p", null, status === null ? "正在加载设置…" : status.text));
       }
 
       return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
@@ -223,7 +338,7 @@ window.__ModuleLoader__.load({
         React.createElement("div", { key: "Vault 目录", style: { padding: "8px 0", borderBottom: "1px solid rgba(128,128,128,.15)" } },
           React.createElement("span", null, "Vault 目录"),
           React.createElement("p", { style: hintStyle },
-            "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框，「清除」立即清空并保存（之后命令会提示先 /ml init）。保存时自动同步到该目录下的 .memoryleak.yaml（vault 路径除外）"),
+            "日志与待办的存放根目录；「浏览…」打开系统目录选择对话框，「清除」立即生效（之后命令会提示先 /ml init）。改动会自动保存并同步到该目录下的 .memoryleak.yaml（vault 路径除外）"),
           React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 6 } },
             React.createElement("button", { onClick: browse, disabled: picking || busy, style: { flex: "0 0 auto" } }, picking ? "打开中…" : "浏览…"),
             React.createElement("input", {
@@ -237,6 +352,113 @@ window.__ModuleLoader__.load({
               disabled: busy || draft.vault.trim() === "",
               style: { flex: "0 0 auto" },
             }, busy ? "处理中…" : "清除"))),
+        React.createElement("div", { key: "邮箱（/ml mail）", style: { padding: "10px 0 4px", borderBottom: "1px solid rgba(128,128,128,.15)" } },
+          React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 } },
+            React.createElement("span", null, "邮箱（/ml mail）"),
+            React.createElement("button", {
+              onClick: clearMail,
+              disabled: busy || (draft.mailHost.trim() === "" && draft.mailUser.trim() === "" && draft.mailPassword === "" && draft.mailToken === "" && draft.mailCaPem === "" && draft.mailTlsInsecure !== true),
+              style: { flex: "0 0 auto" },
+            }, "清除邮箱配置")),
+          React.createElement("p", { style: hintStyle },
+            "工作邮件（IMAP），供 /ml mail read 增量阅读。服务器/账号/密码留空 = 未配置（/ml mail 会弹引导）。QQ/163/126 等要在网页版开启 IMAP 并使用「授权码」；密码明文只存 ~/.dsh/settings.yaml（本机），绝不写进 Vault。"),
+          row("登陆方式",
+            React.createElement("select", {
+              value: draft.mailAuth,
+              onChange: (event) => update({ mailAuth: event.target.value }),
+              style: { minWidth: 180 },
+            },
+              React.createElement("option", { key: "password", value: "password" }, "密码 / 授权码"),
+              React.createElement("option", { key: "xoauth2", value: "xoauth2" }, "OAuth2 access token")),
+            "xoauth2 时用 token 代替密码（IMAP XOAUTH2）"),
+          row("IMAP 服务器",
+            React.createElement("input", {
+              value: draft.mailHost,
+              onChange: (event) => update({ mailHost: event.target.value }),
+              placeholder: "imap.example.com",
+              spellCheck: false,
+              style: { minWidth: 220 },
+            }),
+            "只填主机名或 IP（端口另填），如 imap.qq.com / outlook.office365.com"),
+          row("端口",
+            React.createElement("input", {
+              type: "number", min: 1, max: 65535, step: 1,
+              value: draft.mailPort,
+              onChange: (event) => update({ mailPort: event.target.value === "" ? 0 : Number(event.target.value) }),
+              style: inputStyle,
+            }),
+            "993（TLS）为常规值"),
+          row("使用 TLS",
+            React.createElement("input", {
+              type: "checkbox",
+              checked: draft.mailSecure === true,
+              onChange: (event) => update({ mailSecure: event.target.checked }),
+            }),
+            "993 开、143 关"),
+          row("邮箱账号",
+            React.createElement("input", {
+              value: draft.mailUser,
+              onChange: (event) => update({ mailUser: event.target.value }),
+              placeholder: "me@example.com",
+              spellCheck: false,
+              style: { minWidth: 220 },
+            }),
+            "IMAP 登陆用户名（通常为邮箱地址）"),
+          draft.mailAuth === "xoauth2"
+            ? row("OAuth2 token",
+                React.createElement("input", {
+                  type: "password",
+                  value: draft.mailToken,
+                  onChange: (event) => update({ mailToken: event.target.value }),
+                  placeholder: "access token",
+                  spellCheck: false,
+                  style: { minWidth: 220 },
+                }),
+                "mailAuth=xoauth2 时的访问令牌（代替密码）")
+            : row("密码 / 授权码",
+                React.createElement("input", {
+                  type: "password",
+                  value: draft.mailPassword,
+                  onChange: (event) => update({ mailPassword: event.target.value }),
+                  placeholder: "••••••••",
+                  spellCheck: false,
+                  autoComplete: "new-password",
+                  style: { minWidth: 220 },
+                }),
+                "授权码 = 网页版邮箱设置里生成的 IMAP 专用码"),
+          row("信任的证书",
+            React.createElement("textarea", {
+              value: draft.mailCaPem,
+              onChange: (event) => update({ mailCaPem: event.target.value }),
+              rows: 3,
+              spellCheck: false,
+              style: { minWidth: 240, fontVariantNumeric: "tabular-nums", fontFamily: "monospace", fontSize: 11 },
+            }),
+            "PEM 格式，可多张；setup 引导选「信任并保存」时自动写入，一般无需手改"),
+          row("跳过证书校验",
+            React.createElement("input", {
+              type: "checkbox",
+              checked: draft.mailTlsInsecure === true,
+              onChange: (event) => update({ mailTlsInsecure: event.target.checked }),
+            }),
+            "兜底：不再验证服务器身份（连接仍加密）。一般用不着——setup 引导里就有「跳过证书校验并保存」，此处勾选同样自动保存"),
+          row("邮件目录",
+            React.createElement("input", {
+              value: draft.mailFolder,
+              onChange: (event) => update({ mailFolder: event.target.value }),
+              placeholder: "INBOX",
+              spellCheck: false,
+              style: { minWidth: 160 },
+            }),
+            "IMAP mailbox 名，默认收件箱 INBOX"),
+          row("单次最多封数",
+            React.createElement("input", {
+              type: "number", min: 1, max: 200, step: 1,
+              value: draft.mailMaxEmails,
+              onChange: (event) => update({ mailMaxEmails: event.target.value === "" ? 0 : Number(event.target.value) }),
+              style: inputStyle,
+            }),
+            "一次 /ml mail read 下载分析的上限，超出保留最新")),
         row("默认过滤",
           React.createElement("select", {
             value: draft.defaultStatus,
@@ -311,14 +533,12 @@ window.__ModuleLoader__.load({
           "新建周志文件的初始内容；占位符 {start} {end} {week}"),
         React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, gap: 8 } },
           React.createElement("span", {
-            style: message === null ? { display: "none" } : {
-              color: message.kind === "ok" ? "rgba(46,125,50,.95)" : "rgba(198,40,40,.95)",
+            style: status === null ? { color: "rgba(128,128,128,.9)", fontSize: 12 } : {
+              color: status.kind === "ok" ? "rgba(46,125,50,.95)" : "rgba(198,40,40,.95)",
               fontSize: 12,
             },
-          }, message === null ? "" : message.text),
-          React.createElement("div", { style: { display: "flex", gap: 8 } },
-            React.createElement("button", { onClick: reset, disabled: busy }, "恢复默认"),
-            React.createElement("button", { onClick: save, disabled: busy }, busy ? "处理中…" : "保存"))),
+          }, status === null ? "改动自动保存（全局与本 Vault 同步）" : status.text),
+          React.createElement("button", { onClick: reset, disabled: busy }, "恢复默认")),
         React.createElement("div", { style: { marginTop: 12, borderTop: "1px solid rgba(128,128,128,.15)", paddingTop: 8 } },
           React.createElement("span", { style: hintStyle },
             "已注册的待办格式（可扩展）：" + (formats.length === 0 ? "加载中…" : formats.map((f) => f.id).join("、")),
@@ -382,6 +602,24 @@ window.__ModuleLoader__.load({
 
     function MlCommandView({ node }) {
       const outcome = node !== null && typeof node === "object" && node.outcome !== undefined ? node.outcome : null;
+      const rootRef = React.useRef(null);
+      // 命令完成时自动把会话滚到底：官方的滚动跟随只认「用户消息 /
+      // steering / 读者本就在底部」，命令结果不在其列 —— /ml view 出内容
+      // 后常停在原位，要手点一下才下去。只在本组件存活期间观察到
+      // 「运行中 → 完成」的跃迁时触发一次；挂载时已完成的（翻历史被
+      // 虚拟化重挂载）不触发，避免把正在回看的用户拽到底部。scrollTop
+      // 赋值会触发官方 onScroll 监听，自动完成「钉到底」状态的重算。
+      const settledRef = React.useRef(outcome !== null);
+      React.useEffect(() => {
+        if (outcome === null || settledRef.current) return;
+        settledRef.current = true;
+        const root = rootRef.current;
+        const scroller = root !== null
+          ? root.closest("[data-conversation-scroll]")
+          : document.querySelector("[data-conversation-scroll]");
+        if (scroller === null || scroller === undefined) return;
+        scroller.scrollTop = scroller.scrollHeight;
+      }, [outcome]);
       const header = "/ml" + (typeof node?.args === "string" && node.args !== "" ? node.args : "");
       const captionStyle = {
         color: "var(--dsw-alias-label-tertiary)",
@@ -389,7 +627,7 @@ window.__ModuleLoader__.load({
         margin: "0 0 2px 4px",
       };
       if (outcome === null) {
-        return React.createElement("div", null,
+        return React.createElement("div", { ref: rootRef },
           React.createElement("div", { style: captionStyle }, header + " · 正在执行…"));
       }
       const text = typeof outcome.text === "string" ? outcome.text : "";
@@ -408,7 +646,7 @@ window.__ModuleLoader__.load({
       const body = !isError && text.startsWith("待办 ")
         ? React.createElement(MlTodoListBody, { text, cardStyle })
         : React.createElement("pre", { style: cardStyle }, text === "" ? "（无输出）" : text);
-      return React.createElement("div", null,
+      return React.createElement("div", { ref: rootRef },
         React.createElement("div", { style: captionStyle }, header),
         body);
     }
@@ -748,6 +986,20 @@ window.__ModuleLoader__.load({
     /** Date → 'M-dd'（快捷键角标用）。 */
     function mlShortDate(d) { return (d.getMonth() + 1) + "-" + String(d.getDate()).padStart(2, "0"); }
 
+    /** 交互流程（todo 新增等）结束后把焦点还给主输入框：选日期/点选项会把
+     *  焦点带进卡片，流程一结束用户的下一动作几乎总是继续打字。
+     *  textarea[data-phase] 是官方输入框的稳定锚点；卡片卸载与输入区恢复
+     *  存在时序差，rAF + 两段兜底重试（只在元素可用时聚焦，不抢禁用态）。 */
+    function mlFocusMainInput() {
+      const focus = () => {
+        const area = document.querySelector("textarea[data-phase]");
+        if (area !== null && area.disabled !== true) area.focus();
+      };
+      requestAnimationFrame(focus);
+      setTimeout(focus, 80);
+      setTimeout(focus, 300);
+    }
+
     /* 接管卡共用壳样式：排版令牌对齐官方 QuestionComposer 的几何（同槽
        同款卡片），日期选择器与首问组合卡共用，主体各自定义。 */
     const ML_FRAME_STYLE = {
@@ -852,6 +1104,8 @@ window.__ModuleLoader__.load({
         if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
           throw new Error("答案被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
         }
+        // 日期轮是 todo 新增的最后一问：流程结束，焦点还给输入框。
+        mlFocusMainInput();
       });
       const cancelWait = () => settle(async () => {
         const receipt = await wait.respond({
@@ -861,6 +1115,7 @@ window.__ModuleLoader__.load({
         if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
           throw new Error("取消被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
         }
+        mlFocusMainInput();
       });
 
       const shortcuts = [
@@ -1075,6 +1330,10 @@ window.__ModuleLoader__.load({
         if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
           throw new Error("答案被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
         }
+        // anytime 到此流程结束 → 焦点还给输入框；deadline/sleep 还有日期轮，
+        // 焦点保持游离（日期卡的键盘监听在 document 上，不依赖焦点，
+        // 且聚焦输入框反而会让数字键打进草稿、被输入守卫跳过）。
+        if (t === "anytime") mlFocusMainInput();
       });
       const cancelWait = () => settle(async () => {
         const receipt = await wait.respond({
@@ -1084,12 +1343,19 @@ window.__ModuleLoader__.load({
         if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
           throw new Error("取消被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
         }
+        mlFocusMainInput();
       });
 
       // 选项与选择函数先于键盘 effect（effect 每次渲染重挂，闭包取最新值）。
       const optionsOf = (q) => (Array.isArray(q.options) ? q.options.filter((o) => o !== null && typeof o === "object" && typeof o.label === "string") : []);
       const typeOptions = typeQ === null ? [] : optionsOf(typeQ);
       const prioOptions = prioQ === null ? [] : optionsOf(prioQ);
+      // 字母快捷键（label 首字母派生：deadline→d / sleep→s / anytime→a、
+      // urgent→u / medium→m / low→l；两组字母天然不冲突）。
+      const labelKeyOf = (label) => {
+        const first = String(label).toLowerCase().charAt(0);
+        return /^[a-z]$/.test(first) ? first : "";
+      };
       const chooseType = (label) => {
         if (busy) return;
         if (prioLabel !== null) submit(label, prioLabel);
@@ -1101,8 +1367,8 @@ window.__ModuleLoader__.load({
         else { setPrioLabel(label); setError(null); }
       };
 
-      // 键盘：Esc 取消（capture 拦截；IME 组合中不拦）；数字 1-9 选类型、
-      // 字母选重要程度（按选项 label 首字母派生，如 u=urgent / m=medium / l=low）；
+      // 键盘：Esc 取消（capture 拦截；IME 组合中不拦）；数字 1-9 或字母
+      // （首字母，先匹配类型、再匹配优先级）选类型，字母选重要程度；
       // 焦点在文本输入类元素上时只保留 Esc（不吞打字）。
       React.useEffect(() => {
         if (busy) return undefined;
@@ -1126,8 +1392,10 @@ window.__ModuleLoader__.load({
             return;
           }
           if (/^[a-z]$/.test(key)) {
-            const option = prioOptions.find((o) => o.label.toLowerCase().startsWith(key));
-            if (option !== undefined) { ev.preventDefault(); choosePrio(option.label); }
+            const type = typeOptions.find((o) => labelKeyOf(o.label) === key);
+            if (type !== undefined) { ev.preventDefault(); chooseType(type.label); return; }
+            const prio = prioOptions.find((o) => labelKeyOf(o.label) === key);
+            if (prio !== undefined) { ev.preventDefault(); choosePrio(prio.label); }
           }
         };
         document.addEventListener("keydown", onKey, true);
@@ -1165,11 +1433,8 @@ window.__ModuleLoader__.load({
         borderRadius: 12, padding: "5px 4px", color: "var(--dsw-alias-label-primary)",
       });
       const chipDescStyle = { color: "var(--dsw-alias-label-tertiary)", fontSize: 11, lineHeight: "14px" };
-      // 字母快捷键提示（label 首字母；urgent→u / medium→m / low→l）
-      const prioKeyOf = (label) => {
-        const first = label.toLowerCase().charAt(0);
-        return /^[a-z]$/.test(first) ? first : "";
-      };
+      // 字母快捷键角标样式（类型行与优先级 chip 共用）
+      const keyHintStyle = { color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, marginRight: 4 };
 
       return React.createElement("div", { style: ML_FRAME_STYLE, "data-ml-intro-question": wait.key },
         React.createElement("section", { style: ML_CARD_STYLE, "aria-label": title },
@@ -1183,18 +1448,24 @@ window.__ModuleLoader__.load({
             }, "✕")),
           React.createElement("div", { style: ML_BODY_STYLE, "data-ml-intro-scroll": true },
             React.createElement("div", { style: rowsStyle, role: "radiogroup", "aria-label": title },
-              typeOptions.map((option, index) => React.createElement("button", {
-                key: option.label, type: "button", style: rowStyle(option.label === typeLabel), className: "ml-intro-option",
-                role: "radio", "aria-checked": option.label === typeLabel, disabled: busy,
-                onClick: () => chooseType(option.label),
-              },
-                React.createElement("span", { style: numberStyle }, String(index + 1)),
-                React.createElement("span", { style: rowLabelStyle }, option.label),
-                typeof option.description === "string" ? React.createElement("span", { style: rowDescStyle }, option.description) : null))),
+              typeOptions.map((option, index) => {
+                const keyHint = labelKeyOf(option.label);
+                return React.createElement("button", {
+                  key: option.label, type: "button", style: rowStyle(option.label === typeLabel), className: "ml-intro-option",
+                  role: "radio", "aria-checked": option.label === typeLabel, disabled: busy,
+                  onClick: () => chooseType(option.label),
+                  title: keyHint !== "" ? "快捷键 " + (index + 1) + " 或 " + keyHint : undefined,
+                },
+                  React.createElement("span", { style: numberStyle }, String(index + 1)),
+                  React.createElement("span", { style: rowLabelStyle },
+                    keyHint !== "" ? React.createElement("span", { style: keyHintStyle }, keyHint) : null,
+                    option.label),
+                  typeof option.description === "string" ? React.createElement("span", { style: rowDescStyle }, option.description) : null);
+              })),
             React.createElement("div", { style: groupLabelStyle }, prioTitle),
             React.createElement("div", { style: chipsStyle, role: "radiogroup", "aria-label": prioTitle },
               prioOptions.map((option) => {
-                const keyHint = prioKeyOf(option.label);
+                const keyHint = labelKeyOf(option.label);
                 return React.createElement("button", {
                   key: option.label, type: "button", style: chipStyle(option.label === prioLabel), className: "ml-intro-option",
                   role: "radio", "aria-checked": option.label === prioLabel, disabled: busy,
@@ -1202,13 +1473,13 @@ window.__ModuleLoader__.load({
                   title: keyHint !== "" ? "快捷键 " + keyHint : undefined,
                 },
                   React.createElement("span", { style: rowLabelStyle },
-                    keyHint !== "" ? React.createElement("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, marginRight: 4 } }, keyHint) : null,
+                    keyHint !== "" ? React.createElement("span", { style: keyHintStyle }, keyHint) : null,
                     option.label),
                   typeof option.description === "string" ? React.createElement("span", { style: chipDescStyle }, option.description) : null);
               }))),
           React.createElement("footer", { style: ML_FOOTER_STYLE },
             React.createElement("span", { style: error !== null ? ML_ERROR_STYLE : ML_HINT_STYLE, role: "status" },
-              error !== null ? error : "数字键选类型 · 字母键选重要程度（如 u=urgent）· 选完自动提交 · Esc 取消"),
+              error !== null ? error : "数字 1/2/3 或字母 d/s/a 选类型 · 字母 u/m/l 选重要程度 · 选完自动提交 · Esc 取消"),
             React.createElement("button", {
               type: "button", style: ML_CANCEL_BTN_STYLE, className: "ml-intro-cancel",
               disabled: busy, onClick: cancelWait,
@@ -1513,6 +1784,175 @@ window.__ModuleLoader__.load({
             }, busy ? "处理中…" : "选择此目录"))));
     }
 
+    /* ---------------- /ml mail 设置引导卡 ----------------
+       宿主在邮箱未配置（或 /ml mail setup）时发出三问批次（id 固定为
+       ml-mail-host / ml-mail-user / ml-mail-secret，src/mail.js 的
+       ML_MAIL_*_ID，两处必须同步改）。这里认领渲染成一张表单卡：
+       服务器 / 账号 / 密码或授权码三个输入（密码框遮蔽），Enter 在末
+       字段直接提交。答案走通用 respond 协议（三项 custom）；留空提交
+       = 宿主侧「沿用当前值」。其余环境（TUI/原生）走通用逐题问答。 */
+    const ML_MAIL_HOST_ID = "ml-mail-host";
+    const ML_MAIL_USER_ID = "ml-mail-user";
+    const ML_MAIL_SECRET_ID = "ml-mail-secret";
+    const ML_MAIL_LABELS = {};
+    ML_MAIL_LABELS[ML_MAIL_HOST_ID] = "IMAP 服务器";
+    ML_MAIL_LABELS[ML_MAIL_USER_ID] = "邮箱账号";
+    ML_MAIL_LABELS[ML_MAIL_SECRET_ID] = "密码 / 授权码";
+
+    /** chain select：只认领「ml-mail-host + ml-mail-user + ml-mail-secret 三问同批」。 */
+    function mlSelectMailSetup(owner) {
+      const interactions = owner !== null && typeof owner === "object" && Array.isArray(owner.interactions) ? owner.interactions : [];
+      for (const interaction of interactions) {
+        if (interaction === null || typeof interaction !== "object" || interaction.kind !== "question") continue;
+        const questions = interaction.payload !== null && typeof interaction.payload === "object" && Array.isArray(interaction.payload.questions)
+          ? interaction.payload.questions
+          : [];
+        if (questions.length !== 3) continue;
+        const ids = questions.map((q) => (q !== null && typeof q === "object" ? q.id : ""));
+        if (ids.includes(ML_MAIL_HOST_ID) && ids.includes(ML_MAIL_USER_ID) && ids.includes(ML_MAIL_SECRET_ID)) {
+          return interaction;
+        }
+      }
+      return null;
+    }
+
+    function MlMailSetupComposer({ matched }) {
+      const wait = matched;
+      const questions = wait !== null && typeof wait === "object" && wait.payload !== null && typeof wait.payload === "object" && Array.isArray(wait.payload.questions)
+        ? wait.payload.questions.filter((q) => q !== null && typeof q === "object")
+        : [];
+      const [values, setValues] = React.useState({});
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState(null);
+
+      const fields = questions.map((question) => ({
+        id: question.id,
+        label: ML_MAIL_LABELS[question.id] || (typeof question.question === "string" ? question.question : question.id),
+        secret: question.id === ML_MAIL_SECRET_ID,
+      }));
+
+      const setValue = (id, text) => setValues((prev) => Object.assign({}, prev, { [id]: text }));
+
+      const settle = (send) => {
+        setBusy(true);
+        setError(null);
+        send().catch((cause) => {
+          setBusy(false);
+          setError(cause instanceof Error ? cause.message : String(cause));
+        });
+      };
+      const submit = () => settle(async () => {
+        const missing = fields.filter((field) => String(values[field.id] ?? "").trim() === "").map((field) => field.label);
+        // 首次配置三项都必填；沿用当前值的「留空」语义只在已有配置时成立
+        // ——宿主会裁决（留空且无当前值 → 报错），这里只在全空时提示。
+        if (fields.length > 0 && missing.length === fields.length) {
+          throw new Error("先填一下（服务器 / 账号 / 密码或授权码）再提交");
+        }
+        const receipt = await wait.respond({
+          ok: true,
+          value: {
+            sessionId: wait.sessionId,
+            answer: { answers: fields.map((field) => ({ id: field.id, selected: [], custom: String(values[field.id] ?? "").trim() })) },
+          },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("答案被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+        mlFocusMainInput();
+      });
+      const cancelWait = () => settle(async () => {
+        const receipt = await wait.respond({
+          ok: false,
+          error: { code: "cancelled", message: "the user closed this question request", details: {} },
+        });
+        if (receipt !== null && typeof receipt === "object" && receipt.accepted === false) {
+          throw new Error("取消被宿主拒绝：" + String(receipt.reason ?? "未知原因"));
+        }
+        mlFocusMainInput();
+      });
+
+      // Esc 取消（capture 拦截；IME 组合中不拦）。
+      React.useEffect(() => {
+        if (busy) return undefined;
+        const onKey = (ev) => {
+          if (ev.isComposing === true) return;
+          if (ev.key === "Escape") {
+            ev.preventDefault();
+            ev.stopPropagation();
+            cancelWait();
+          }
+        };
+        document.addEventListener("keydown", onKey, true);
+        return () => document.removeEventListener("keydown", onKey, true);
+      });
+
+      // 兜底：载体形态不符不渲染（hook 之后 return，保证 hook 数稳定）。
+      if (wait === null || typeof wait !== "object" || fields.length !== 3) return null;
+
+      const inputStyle = {
+        width: "100%", minHeight: 34, padding: "5px 12px",
+        border: "1px solid var(--dsw-alias-border-l1)", borderRadius: 10,
+        background: "var(--dsw-specific-input-major)", color: "var(--dsw-alias-label-primary)",
+        fontSize: 14, lineHeight: "21px",
+      };
+      const fieldStyle = { display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 };
+      const labelStyle = { color: "var(--dsw-alias-label-secondary)", fontSize: 12, lineHeight: "16px" };
+      const primaryBtnStyle = {
+        flexShrink: 0, minHeight: 28, padding: "0 14px", cursor: "pointer",
+        background: "transparent", border: "1px solid var(--dsw-alias-border-l1)",
+        borderRadius: 8, fontSize: 13, lineHeight: "20px", color: "var(--dsw-alias-label-primary)",
+      };
+      const onFieldKey = (ev, index) => {
+        if (ev.isComposing === true) return;
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          if (index === fields.length - 1) submit();
+        }
+      };
+
+      return React.createElement("div", { style: ML_FRAME_STYLE, "data-ml-mail-question": wait.key },
+        React.createElement("section", { style: ML_CARD_STYLE, "aria-label": "配置邮箱" },
+          React.createElement("header", { style: ML_HEADER_STYLE },
+            React.createElement("div", null,
+              React.createElement("div", { style: ML_EYEBROW_STYLE }, "MemoryLeak 邮箱"),
+              React.createElement("h2", { style: ML_TITLE_STYLE }, "配置工作邮箱（IMAP）")),
+            React.createElement("button", {
+              type: "button", style: ML_CLOSE_BTN_STYLE, className: "ml-mail-cancel",
+              "aria-label": "取消", title: "取消（Esc）", disabled: busy, onClick: cancelWait,
+            }, "✕")),
+          React.createElement("div", { style: ML_BODY_STYLE, "data-ml-mail-scroll": true },
+            fields.map((field, index) => React.createElement("div", { key: field.id, style: fieldStyle },
+              React.createElement("label", { style: labelStyle, htmlFor: "ml-mail-" + field.id }, field.label),
+              React.createElement("input", {
+                id: "ml-mail-" + field.id,
+                type: field.secret ? "password" : "text",
+                style: inputStyle,
+                className: "ml-mail-input",
+                value: String(values[field.id] ?? ""),
+                autoFocus: index === 0,
+                spellCheck: false,
+                autoComplete: field.secret ? "new-password" : "off",
+                disabled: busy,
+                placeholder: field.id === ML_MAIL_HOST_ID ? "imap.example.com" : field.id === ML_MAIL_USER_ID ? "me@example.com" : "••••••••",
+                onChange: (event) => setValue(field.id, event.target.value),
+                onKeyDown: (ev) => onFieldKey(ev, index),
+              }))),
+            React.createElement("p", { style: ML_HINT_STYLE },
+              "QQ / 163 / 126 等邮箱：先在网页版设置里开启 IMAP，密码处填生成的「授权码」。端口 / TLS / 邮件目录 / OAuth2 在 GUI 设置 → MemoryLeak 里改。")),
+          React.createElement("footer", { style: ML_FOOTER_STYLE },
+            React.createElement("span", { style: error !== null ? ML_ERROR_STYLE : ML_HINT_STYLE, role: "status" },
+              error !== null ? error : "Enter 提交（末字段）· 已有配置留空 = 沿用当前值 · Esc 取消"),
+            React.createElement("div", { style: { display: "flex", gap: 8 } },
+              React.createElement("button", {
+                type: "button", style: ML_CANCEL_BTN_STYLE, className: "ml-mail-cancel",
+                disabled: busy, onClick: cancelWait,
+              }, busy ? "处理中…" : "取消"),
+              React.createElement("button", {
+                type: "button", style: primaryBtnStyle, className: "ml-mail-confirm",
+                disabled: busy, onClick: submit,
+              }, busy ? "验证中…" : "保存并试登陆")))));
+    }
+
     /* ---------------- 插件入口 ---------------- */
     // sessions/conversation 是槽位 inject 工厂里解析会话输入 shell 的硬依赖，
     // 必须声明，否则运行时报 cannot get property "sessions" without inject。
@@ -1560,6 +2000,13 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("conversation.composer", () => ctx.slots.register(
         { name: "conversation.composer", priority: -100, select: mlSelectVaultQuestion },
         (props) => React.createElement(MlVaultComposer, { ...props, pickDirectory })
+      ));
+
+      // /ml mail 设置引导（ml-mail-host + ml-mail-user + ml-mail-secret 三问
+      // 批次）：接管渲染成一张表单卡（密码遮蔽输入，Enter 末字段直接提交）。
+      ctx.slots.inject("conversation.composer", () => ctx.slots.register(
+        { name: "conversation.composer", priority: -100, select: mlSelectMailSetup },
+        MlMailSetupComposer
       ));
 
       // 命令菜单选中 /ml → 快速打开弹窗（VSCode Ctrl+P 风格查看文件）。

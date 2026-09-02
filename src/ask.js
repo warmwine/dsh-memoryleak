@@ -199,6 +199,7 @@ export async function runAskCommand(ctx, agent, invocation, vaultDir, question) 
         : {
             onChunk: (chunk) => {
               if (chunk.type === 'text-delta') sink.delta(chunk.text)
+              else if (chunk.type === 'reasoning-delta') sink.thinking(chunk.text)
               else if (chunk.type === 'usage') sink.usage(chunk.usage)
             },
           }),
