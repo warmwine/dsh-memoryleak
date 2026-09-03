@@ -35,9 +35,10 @@ import { TodoError, TodoRootError, TodoScanAbortedError, TodoUsageError } from '
 import { wakeupSleepingTodos, toggleTodoAt, cancelTodoAt, postponeTodoAt, restoreTodoAt, readJournalFile, listWorkspaceFiles, readWorkspaceFile } from './journal.js'
 import { resolveViewTarget } from './core/fuzzy.js'
 import { prepareVaultDir, resolveEffectiveSettings, writeVaultSettingsFile, VAULT_SETTINGS_FILENAME } from './vault.js'
-import { runNoteCommand, NoteLlmError } from './note.js'
+import { runNoteCommand } from './note.js'
 import { runAskCommand } from './ask.js'
 import { runMailCommand, MailError } from './mail.js'
+import { registerMemoryleakTools } from './tools.js'
 import { NoteParseError } from './core/note.js'
 
 /**
@@ -59,10 +60,11 @@ const ML_VAULT_QUESTION_ID = 'ml-vault'
 
 /**
  * 硬依赖：webServer（API 路由）、commands（/ml）、settings（持久化设置 +
- * Vault 引导写入）、llm（/ml note 的压缩调用，与官方 compaction 同款依赖）。
+ * Vault 引导写入）、tools（memory_note/ask/mail 真实模型工具——原生回合
+ * 里由模型调用，守卫全部在工具内由代码执行）。
  * 工作区定位不再依赖会话 —— 一切以设置的 Vault 为根。
  */
-export const inject = ['webServer', 'commands', 'settings', 'llm']
+export const inject = ['webServer', 'commands', 'settings', 'tools']
 
 export { createDefaultRegistry, createTodoScanner, createScanLimits }
 
@@ -92,6 +94,12 @@ export function apply(ctx) {
       for (const dispose of disposers) dispose()
     }
   }, 'memoryleak: /api/memoryleak routes')
+
+  // ---- 真实模型工具（memory_note_context / memory_note_write / ----
+  // ---- memory_ask_gather / memory_mail_fetch / memory_mail_commit）----
+  // /ml note、/ml ask、/ml mail 把任务交给模型的原生回合（agent.followup），
+  // 模型在回合里调用这些工具完成整理 / 问答 / 读信——守卫全部在工具内。
+  ctx.effect(() => registerMemoryleakTools(ctx, { scope }), 'memoryleak: memory tools')
 
   // ---- /ml 命令（单一注册点；子命令文法见 core/command.js）----
   // 注册描述保持短并导向 /ml help —— 命令菜单/补全里的一行说明不可能
@@ -508,10 +516,9 @@ export function apply(ctx) {
       if (error instanceof TodoRootError) return { kind: 'error', text: `工作区目录不可用：${error.message}` }
       if (error instanceof TodoScanAbortedError) return { kind: 'error', text: '扫描已取消。' }
       if (error instanceof JournalIoError) return { kind: 'error', text: `日志写入失败：${error.message}` }
-      if (error instanceof NoteParseError) return { kind: 'error', text: `模型输出无法解析：${error.message}` }
-      if (error instanceof NoteLlmError) return { kind: 'error', text: `压缩调用失败：${error.message}` }
+      if (error instanceof NoteParseError) return { kind: 'error', text: `整理结果无法解析：${error.message}` }
       if (error instanceof MailError) return { kind: 'error', text: `邮件操作失败：${error.message}` }
-      if (invocation.signal?.aborted) return { kind: 'error', text: '/ml note 已取消。' }
+      if (invocation.signal?.aborted) return { kind: 'error', text: '/ml 已取消。' }
       throw error
     })
   }}

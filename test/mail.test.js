@@ -329,94 +329,38 @@ describe('runMailCommand · read', () => {
     expect(result.text).toContain('配置不完整')
   })
 
-  it('窗口内没有新邮件：不调模型、推进进度、清理临时目录', async () => {
+  /** 伪 agent：收集 followup 消息。 */
+  function agentOf(followups) {
+    return { followup(message) { followups.push(message) } }
+  }
+
+  it('已配置 → 交接给原生回合：消息带 📬 标记 / 窗口 / 两个工具指引；不触 IMAP、不建临时目录、进度不动', async () => {
     await writeVaultMailStateEnd(vault, LAST_END.toISOString())
-    const captured = []
-    const ctx = { llm: fakeLlm([{ type: 'finish', reason: { kind: 'stop' } }], captured) }
-    const { deps, temps } = readDeps([]) // 服务器上没有邮件
-    const result = await runMailCommand(ctx, { options: { provider: 'p', model: 'm' }, ...sessionStub() }, invocationOf(), { action: 'read' }, vault, mailSettings(), deps)
+    let imapTouched = false
+    const { deps, temps } = readDeps(MESSAGES, { createClient: async () => { imapTouched = true; throw new Error('不应连网') } })
+    const followups = []
+    const result = await runMailCommand({}, agentOf(followups), invocationOf(), { action: 'read' }, vault, mailSettings(), deps)
     expect(result.kind).toBe('success')
-    expect(result.text).toContain('没有新邮件')
-    expect(captured).toHaveLength(0) // 零模型调用
-    expect(await readVaultMailStateEnd(vault)).toBe(NOW.toISOString())
-    // 临时目录已删（用完即抛）
-    for (const dir of temps.created) await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(result.text).toContain('读信任务已交给当前模型')
+    expect(imapTouched).toBe(false)
+    expect(temps.created).toHaveLength(0) // 下载交给回合里的 fetch 工具
+    expect(await readVaultMailStateEnd(vault)).toBe(LAST_END.toISOString()) // 进度不动
+    expect(followups).toHaveLength(1)
+    const text = followups[0].content[0].text
+    expect(followups[0].role).toBe('user')
+    expect(text).toContain('📬 /ml mail 读信任务')
+    expect(text).toContain('窗口：')
+    expect(text).toContain('memory_mail_fetch')
+    expect(text).toContain('memory_mail_commit')
+    expect(text).toContain('漏调 = 下次重读同一批邮件')
   })
 
-  it('有新邮件：只把窗口内的邮件喂给模型；进度推进到窗口终点；临时目录删除', async () => {
-    await writeVaultMailStateEnd(vault, LAST_END.toISOString())
-    const captured = []
-    const ctx = { llm: fakeLlm(
-      [
-        { type: 'text-delta', index: 0, text: MODEL_JSON.slice(0, 40) },
-        { type: 'text-delta', index: 0, text: MODEL_JSON.slice(40) },
-        { type: 'usage', usage: { totalTokens: 512 } },
-        { type: 'finish', reason: { kind: 'stop' } },
-      ],
-      captured,
-    ) }
-    const { session, appended } = sessionStub()
-    const { deps, temps } = readDeps(MESSAGES)
-    const result = await runMailCommand(ctx, { options: { provider: 'p', model: 'm' }, session }, invocationOf(), { action: 'read' }, vault, mailSettings(), deps)
-    expect(result.kind).toBe('success')
-    // 回执：待办 / 待阅 / 元信息
-    expect(result.text).toContain('回复周报')
-    expect(result.text).toContain('待阅')
-    expect(result.text).toContain('已阅读 2 封')
-    expect(result.text).toContain('512 tokens')
-    // prompt 只含窗口内两封
-    const prompt = captured[0].messages[0].content[0].text
-    expect(prompt).toContain('周报')
-    expect(prompt).toContain('新规范')
-    expect(prompt).not.toContain('窗口外')
-    expect(captured[0].maxTokens).toBe(6144)
-    // 状态推进
-    expect(await readVaultMailStateEnd(vault)).toBe(NOW.toISOString())
-    // 流式过程：开始信号 + 下载段说明 + settle 的最终消息
-    const types = appended.map((event) => event.type)
-    expect(types).toContain('step/start')
-    expect(types).toContain('assistant/message')
-    expect(types).toContain('step/end')
-    const settled = appended.find((event) => event.type === 'assistant/message')
-    expect(settled.data.message.content[0].text).toContain('回复周报')
-    // 临时目录已删
-    for (const dir of temps.created) await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' })
-  })
-
-  it('模型输出不合法 → 错误结果且不推进进度（重试不漏邮件）', async () => {
-    await writeVaultMailStateEnd(vault, LAST_END.toISOString())
-    const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: '不是 JSON' }, { type: 'finish', reason: { kind: 'stop' } }]) }
-    const { deps } = readDeps(MESSAGES)
-    const result = await runMailCommand(ctx, { options: { provider: 'p', model: 'm' }, ...sessionStub() }, invocationOf(), { action: 'read' }, vault, mailSettings(), deps)
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('无法解析')
-    // 进度保持旧值
-    expect(await readVaultMailStateEnd(vault)).toBe(LAST_END.toISOString())
-  })
-
-  it('IMAP 故障 → 带提示的错误结果', async () => {
-    await writeVaultMailStateEnd(vault, LAST_END.toISOString())
-    const ctx = { llm: fakeLlm([]) }
-    const deps = {
-      createClient: async () => fakeImap({ connectError: new Error('connect ECONNREFUSED') }).client,
-      parseEml: async () => ({ text: '' }),
-      makeTempDir: trackingTempFactory().makeTempDir,
-      sweep: async () => {},
-      now: () => NOW,
-    }
-    const result = await runMailCommand(ctx, { options: { provider: 'p', model: 'm' }, ...sessionStub() }, invocationOf(), { action: 'read' }, vault, mailSettings(), deps)
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('连不上')
-  })
-
-  it('首次使用（vault 无状态）→ 窗口为当天 00:00 → 现在', async () => {
+  it('首次使用（vault 无状态）→ 交接消息的窗口为「今天 00:00」起', async () => {
     await rm(join(vault, VAULT_SETTINGS_FILENAME), { force: true })
-    const captured = []
-    const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: MODEL_JSON }, { type: 'finish', reason: { kind: 'stop' } }], captured) }
+    const followups = []
     const { deps } = readDeps(MESSAGES)
-    const result = await runMailCommand(ctx, { options: { provider: 'p', model: 'm' }, ...sessionStub() }, invocationOf(), { action: 'read' }, vault, mailSettings(), deps)
-    expect(result.kind).toBe('success')
-    expect(captured[0].messages[0].content[0].text).toContain('今天 00:00')
+    await runMailCommand({}, agentOf(followups), invocationOf(), { action: 'read' }, vault, mailSettings(), deps)
+    expect(followups[0].content[0].text).toContain('今天 00:00')
   })
 })
 

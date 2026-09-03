@@ -2,45 +2,30 @@
  * /ml ask 的宿主胶水：/ml note 的反向——note 把对话写进 Vault，ask 把
  * Vault 读出来当资料，用当前模型回答用户的问题（**只读，绝不写 Vault**）。
  *
- * 流程：汇集资料（MOMENTO/index → 结构化登记文件 → 按问题关键词排序的
- * MOMENTO 知识条目 → 近期日志，预算内截断）→ buildAskPrompt →
- * ctx.llm.stream 一次性调用（复用 note 的管线；maxTokens 更长）→ 回答
- * 以 markdown 流式显示在会话气泡里（与普通回复同款渲染），settle 后进入
- * 对话上下文。命令卡片另给一份纯文本回执。
+ * 命令做薄：本地空库检查后，把问题作为一条 user 消息交给当前模型的原生
+ * 回合（agent.followup）。模型在回合里调 memory_ask_gather 工具拿资料包
+ * （预算 / 相关度打分 / 去重都在工具里由代码执行），然后原生思考并输出
+ * markdown 回答——全部走 DSH 默认对话的渲染与调用路线。
  *
  * @module dsh-memoryleak/ask
  */
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
 import { TodoError } from './core/errors.js'
-import { JournalIoError } from './journal.js'
 import { readVaultNoteConfig } from './vault.js'
+import { ASK_MARK } from './core/command.js'
 import { resolveStructuredTargets, DEFAULT_STRUCTURED_TARGETS } from './core/note.js'
 import {
   ASK_BUDGET_CHARS,
   ASK_ENTRY_CLIP,
   ASK_JOURNAL_CLIP,
   ASK_JOURNAL_COUNT,
-  ASK_MAX_TOKENS,
-  buildAskPrompt,
   extractAskTerms,
   isJournalFileName,
   scoreAskFile,
 } from './core/ask.js'
-import {
-  NoteLlmError,
-  createNoteStreamSink,
-  resolveCurrentRunSeq,
-  resolveNoteModel,
-  streamNoteCompletion,
-} from './note.js'
 
-/** 插件版本（回执标注）。 */
-const PLUGIN_VERSION = createRequire(import.meta.url)('../package.json').version
-
-/** /ml ask 的会话标记（气泡回执前缀；同步维护于 README / help）。 */
-export const ASK_MARK = '❓ /ml ask'
+export { ASK_MARK }
 
 /** 资料汇集故障（环境错误，命令层转用户可见结果）。 */
 export class AskIoError extends TodoError {}
@@ -148,78 +133,49 @@ export async function gatherAskMaterials(vaultDir, targets = DEFAULT_STRUCTURED_
 }
 
 /**
- * /ml ask 的完整流程（命令 handler 调用）。回答本身是 markdown，流式
- * 直接转发（与普通回复同款渲染）；settle 后回答进入对话上下文。
+ * /ml ask：空库检查后，把问题交给当前模型的原生回合。模型调
+ * memory_ask_gather 拿资料包，然后原生思考并回答（markdown、标来源），
+ * 回答自然进入对话上下文，可继续追问。
  *
- * @param {import('@deepseek-ai/cordis').Context} ctx
- * @param {{ options?: { provider?: string, model?: string }, session?: { events?: ReadonlyArray<object>, append?: Function, id?: string, requestHeader?: () => object } }} agent
- * @param {{ commandId: string, signal: AbortSignal }} invocation
+ * @param {import('@deepseek-ai/cordis').Context} _ctx
+ * @param {{ followup?: Function }} agent
+ * @param {{ commandId: string, signal: AbortSignal }} _invocation
  * @param {string} vaultDir
  * @param {string} question 用户问题
  * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
  */
-export async function runAskCommand(ctx, agent, invocation, vaultDir, question) {
-  const target = resolveNoteModel(agent)
-  if (target === null) {
-    return { kind: 'error', text: '当前会话还没有路由过模型请求，无法确定「当前模型」。先发一条消息再执行 /ml ask。' }
-  }
+export async function runAskCommand(_ctx, agent, _invocation, vaultDir, question) {
+  // 空库早退：Vault 里什么都没有时白开一轮没有任何意义（资料汇集是纯本地读）
   const noteConfig = await readVaultNoteConfig(vaultDir)
   const { targets } = resolveStructuredTargets(noteConfig.noteStructured)
-  const { materials, included, total } = await gatherAskMaterials(vaultDir, targets, question)
+  const { included, total } = await gatherAskMaterials(vaultDir, targets, question)
   if (total === 0) {
     return {
       kind: 'error',
       text: 'Vault 里还没有可引用的内容（MOMENTO/ 知识文件、结构化登记、日志均为空）。\n先 /ml note 整理一段对话，或直接把笔记写进 Vault 再问。',
     }
   }
-  const date = new Date()
-  const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-  const prompt = buildAskPrompt({ question, materials, date: today, included, total })
-
-  // 流式过程显示（与 /ml note 同一套合成事件管线）
-  const session = agent.session
-  const stepKey = Math.abs(resolveCurrentRunSeq(session, invocation.commandId) || 1)
-  const sink = typeof session?.append === 'function' ? createNoteStreamSink(session, stepKey) : null
-  const fileLine = `引用 ${included}/${total} 个文件`
-  if (sink !== null) {
-    sink.begin(`${ASK_MARK} 提问（${fileLine}；模型 ${target.provider}/${target.model}；v${PLUGIN_VERSION}）…\n\n`)
+  if (typeof agent?.followup !== 'function') {
+    return { kind: 'error', text: '当前环境不支持把任务交给模型（缺少 agent.followup 通道），无法执行 /ml ask。' }
   }
-
-  let completion
-  try {
-    completion = await streamNoteCompletion(ctx, {
-      provider: target.provider,
-      model: target.model,
-      prompt,
-      maxTokens: ASK_MAX_TOKENS,
-      sessionId: typeof session?.id === 'string' ? session.id : undefined,
-      signal: invocation.signal,
-      ...(sink === null
-        ? {}
-        : {
-            onChunk: (chunk) => {
-              if (chunk.type === 'text-delta') sink.delta(chunk.text)
-              else if (chunk.type === 'reasoning-delta') sink.thinking(chunk.text)
-              else if (chunk.type === 'usage') sink.usage(chunk.usage)
-            },
-          }),
-    })
-  } catch (error) {
-    if (sink !== null) sink.interrupt()
-    if (error instanceof NoteLlmError) return { kind: 'error', text: `回答调用失败：${error.message}` }
-    throw error
+  const handoff = [
+    `${ASK_MARK} 提问（引用 ${included}/${total} 个文件）`,
+    `请回答下面这个关于 MemoryLeak 笔记库（Vault：${vaultDir}）的问题：`,
+    '',
+    `问题：${question}`,
+    '',
+    '1. 先调用 memory_ask_gather 工具（question 传上面的问题原文）：获取按相关度选取的 Vault 资料包。',
+    '2. 只依据资料回答；资料里没有的就直说笔记里没有，不要编造；引用事实时标注来源文件名（如「MOMENTO/databases.md」）。',
+    '3. 用中文 markdown 结构化回答（先结论后依据）；资料有过时或矛盾之处如实指出。',
+  ].join('\n')
+  agent.followup({
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: handoff }],
+    source: { kind: 'user' },
+  })
+  return {
+    kind: 'success',
+    text: `提问已交给当前模型（引用 ${included}/${total} 个文件）。它会在对话里直接回答，可继续追问。`,
   }
-
-  const answer = completion.text.trim()
-  if (answer === '') {
-    if (sink !== null) sink.interrupt()
-    return { kind: 'error', text: '模型没有返回内容，请稍后重试。' }
-  }
-  const usage = completion.usage
-  const totalTokens = typeof usage?.totalTokens === 'number' ? usage.totalTokens : undefined
-  const modelLine = `模型：${target.provider}/${target.model}${totalTokens !== undefined ? ` · ${totalTokens} tokens` : ''} · dsh-memoryleak v${PLUGIN_VERSION}`
-  // 回执：命令卡片（纯文本）；气泡（markdown，settle 后进入对话上下文）
-  const receipt = [`已回答（${fileLine}）`, '─'.repeat(44), answer, '', modelLine].join('\n')
-  if (sink !== null) sink.settle(`${ASK_MARK} ${answer}`, { kind: 'model', provider: target.provider, model: target.model }, usage)
-  return { kind: 'success', text: receipt }
 }

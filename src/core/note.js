@@ -477,8 +477,8 @@ function renderTranscriptItem(item) {
 
 /* ---------------- 2. 模型输出协议 ---------------- */
 
-/** 结构化各类的字段规范说明（进 prompt，约束模型的填写习惯）。 */
-const STRUCTURED_FIELD_RULES = Object.freeze({
+/** 结构化各类的字段规范说明（进 prompt / memory_note_context 工具结果，约束模型的填写习惯）。 */
+export const STRUCTURED_FIELD_RULES = Object.freeze({
   databases: '- databases：name 是简短稳定标识（如「生产主库」「分析从库」）；host 只写主机名或 IP，不带协议、不带端口；port 纯数字；一个库一行。',
   servers: '- servers：name 是简短稳定标识（如「web-01」「跳板机」）；host 与 ip 分开写，host 不带端口；os 写系统名（如 debian/win2022）。',
   credentials: '- credentials：where 只写凭证存放位置（如 1Password 某条目、环境变量 X、~/.aws/credentials），严禁记录明文密码/密钥/token。',
@@ -609,11 +609,28 @@ export function buildNotePrompt({ transcript, date, hasBoundary, known = {}, ski
 export function parseNoteJson(raw, targets = DEFAULT_STRUCTURED_TARGETS) {
   const text = typeof raw === 'string' ? raw.trim() : ''
   if (text === '') throw new NoteParseError('模型输出为空。')
-  let parsed = tryParseJson(text)
+  const parsed = tryParseJson(text)
   if (parsed === undefined) throw new NoteParseError(`模型输出不是合法 JSON：${clip(text, 300)}`)
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new NoteParseError('模型输出不是 JSON 对象。')
   }
+  return sanitizeNoteObject(parsed, targets)
+}
+
+/**
+ * 把一个**已经是结构化对象**的协议载荷清洗为受信数据——
+ * {@link parseNoteJson} 的内层，供两条路径共用：
+ *   1. 旁路文本输出的 JSON.parse 之后的清洗；
+ *   2. 原生工具调用（memory_note_write）的结构化参数清洗——参数由
+ *      harness 按 JSON Schema 校验过形状，但仍要走同一套字段白名单、
+ *      条数/长度上限与表格注入清洗，两条路径的落盘内容才会一致。
+ *
+ * @param {object} parsed 协议对象（summary / note / momento.entries / structured）
+ * @param {Record<string, StructuredTarget>} [targets] 解析后的结构化目标
+ * @returns {{ summary: string, notes: string[], entries: Array<{ title: string, body: string, tags: string[] }>, structured: Record<string, Array<Record<string, string | string[]>>>, warnings: string[] }}
+ * @throws {NoteParseError}
+ */
+export function sanitizeNoteObject(parsed, targets = DEFAULT_STRUCTURED_TARGETS) {
   const warnings = []
 
   const summary = typeof parsed.summary === 'string' && parsed.summary.trim() !== '' ? oneLine(parsed.summary, MAX_SUMMARY) : ''
@@ -674,7 +691,7 @@ export function parseNoteJson(raw, targets = DEFAULT_STRUCTURED_TARGETS) {
   }
 
   if (summary === '' && notes.length === 0 && entries.length === 0 && Object.values(structured).every((rows) => rows.length === 0)) {
-    throw new NoteParseError('模型输出没有可用的压缩内容（note / momento / structured 全为空）。')
+    throw new NoteParseError('整理结果没有可用的压缩内容（note / momento / structured 全为空）。')
   }
   return { summary: summary || '（无摘要）', notes, entries, structured, warnings }
 }

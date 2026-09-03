@@ -161,91 +161,58 @@ function liveSession(events = []) {
   }
 }
 
-describe('runAskCommand（端到端）', () => {
-  const ANSWER = '生产主库端口 **5432**（来源：MOMENTO/databases.md）。'
+describe('runAskCommand（交接给原生回合）', () => {
+  /** 伪 agent：收集 followup 消息。 */
+  function agentOf(followups) {
+    return {
+      followup(message) {
+        followups.push(message)
+      },
+    }
+  }
 
-  it('成功路径：资料带进 prompt、回答流式转发、settle 进上下文、回执纯文本', async () => {
-    const captured = []
-    const ctx = { llm: fakeLlm([
-      { type: 'text-delta', index: 0, text: '生产主库端口 ' },
-      { type: 'text-delta', index: 0, text: '**5432**（来源：MOMENTO/databases.md）。' },
-      { type: 'usage', usage: { totalTokens: 777 } },
-      { type: 'finish', reason: { kind: 'stop' } },
-    ], captured) }
-    const { session, appended } = liveSession([{ seq: 1, type: 'command/run', data: { commandId: 'cmd-ask', name: 'ml' } }])
-    const result = await runAskCommand(ctx, { session }, { commandId: 'cmd-ask', signal: new AbortController().signal }, vault, '主库端口是多少')
-
+  it('成功路径：交接消息携带问题与 gather 指引，命令回执说明已交给模型', async () => {
+    const followups = []
+    const result = await runAskCommand({}, agentOf(followups), { commandId: 'cmd-ask', signal: new AbortController().signal }, vault, '主库端口是多少')
     expect(result.kind).toBe('success')
-    // prompt：资料与问题都在，maxTokens 加长
-    const prompt = captured[0].messages[0].content[0].text
-    expect(prompt).toContain('### MOMENTO/databases.md')
-    expect(prompt).toContain('问题：主库端口是多少')
-    expect(captured[0].maxTokens).toBeGreaterThan(4096)
-    // 流式：开始信号 + 回答 markdown 原样转发 + usage
-    const deltas = appended.filter((e) => e.type === 'assistant/chunk' && e.data.chunk.type === 'text-delta').map((e) => e.data.chunk.text)
-    expect(deltas[0]).toContain(`${ASK_MARK} 提问`)
-    expect(deltas[0]).toContain('prov/model-x')
-    expect(deltas.slice(1).join('')).toBe(ANSWER)
-    expect(appended.some((e) => e.data?.chunk?.type === 'usage')).toBe(true)
-    // settle：append 型 assistant/message，带标记前缀与 usage
-    const settle = appended.find((e) => e.type === 'assistant/message')
-    expect(settle.surfaceOp).toBe('append')
-    expect(settle.data.message.content[0].text).toBe(`${ASK_MARK} ${ANSWER}`)
-    expect(settle.data.usage).toEqual({ totalTokens: 777 })
-    // 命令卡回执：纯文本，含模型行
-    expect(result.text).toContain(ANSWER)
-    expect(result.text).toContain('已回答（引用')
-    expect(result.text).toContain('777 tokens')
+    expect(result.text).toContain('提问已交给当前模型')
+    expect(result.text).toContain('引用')
+    expect(followups).toHaveLength(1)
+    const handoff = followups[0]
+    expect(handoff.role).toBe('user')
+    expect(handoff.source).toEqual({ kind: 'user' })
+    expect(typeof handoff.id).toBe('string')
+    const text = handoff.content[0].text
+    expect(text).toContain(`${ASK_MARK} 提问`)
+    expect(text).toContain('问题：主库端口是多少')
+    expect(text).toContain('memory_ask_gather')
+    expect(text).toContain('标注来源文件名')
   })
 
-  it('思考转发：reasoning-delta 以思考块（块位 0）流式显示，回答正文在块位 1', async () => {
-    const ctx = { llm: fakeLlm([
-      { type: 'reasoning-delta', index: 0, text: '用户问端口，去 databases.md 找' },
-      { type: 'text-delta', index: 0, text: '生产主库端口 ' },
-      { type: 'text-delta', index: 0, text: '**5432**。' },
-      { type: 'finish', reason: { kind: 'stop' } },
-    ]) }
-    const { session, appended } = liveSession([{ seq: 1, type: 'command/run', data: { commandId: 'cmd-think', name: 'ml' } }])
-    const result = await runAskCommand(ctx, { session }, { commandId: 'cmd-think', signal: new AbortController().signal }, vault, '主库端口是多少')
-    expect(result.kind).toBe('success')
-    const reasoning = appended.filter((e) => e.type === 'assistant/chunk' && e.data.chunk.type === 'reasoning-delta')
-    expect(reasoning).toHaveLength(1)
-    expect(reasoning[0].data.chunk.index).toBe(0)
-    expect(reasoning[0].data.chunk.text).toContain('去 databases.md 找')
-    const texts = appended.filter((e) => e.type === 'assistant/chunk' && e.data.chunk.type === 'text-delta')
-    for (const entry of texts) expect(entry.data.chunk.index).toBe(1)
+  it('交接消息只做任务说明，不把资料全文塞进上下文（资料由工具按需带出）', async () => {
+    const followups = []
+    await runAskCommand({}, agentOf(followups), { commandId: 'cmd-ask', signal: new AbortController().signal }, vault, '主库端口是多少')
+    const text = followups[0].content[0].text
+    expect(text.length).toBeLessThan(2_000)
+    expect(text).not.toContain('### MOMENTO/databases.md')
   })
 
-  it('无当前模型 → 报错（不调 LLM）', async () => {
-    let called = 0
-    const ctx = { llm: { async *stream() { called += 1 } } }
-    const result = await runAskCommand(ctx, { session: { events: [], requestHeader: () => undefined, options: {} } }, { commandId: 'c', signal: new AbortController().signal }, vault, 'q')
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('当前模型')
-    expect(called).toBe(0)
-  })
-
-  it('空 Vault → 明确报错（不调 LLM）', async () => {
+  it('空 Vault → 明确报错，不交接（followup 不被调用）', async () => {
     const empty = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-ask-empty-'))
     try {
-      let called = 0
-      const ctx = { llm: { async *stream() { called += 1 } } }
-      const result = await runAskCommand(ctx, { session: { events: [], requestHeader: () => ({ config: { provider: 'p', model: 'm' } }) } }, { commandId: 'c', signal: new AbortController().signal }, empty, 'q')
+      const followups = []
+      const result = await runAskCommand({}, agentOf(followups), { commandId: 'c', signal: new AbortController().signal }, empty, 'q')
       expect(result.kind).toBe('error')
       expect(result.text).toContain('还没有可引用的内容')
-      expect(called).toBe(0)
+      expect(followups).toHaveLength(0)
     } finally {
       await rm(empty, { recursive: true, force: true })
     }
   })
 
-  it('模型故障 → interrupt 收尾 + 错误结果', async () => {
-    const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: '写到一半' }, { type: 'finish', reason: { kind: 'error', failure: { message: '炸了' } } }]) }
-    const { session, appended } = liveSession([{ seq: 1, type: 'command/run', data: { commandId: 'cmd-bad' } }])
-    const result = await runAskCommand(ctx, { session }, { commandId: 'cmd-bad', signal: new AbortController().signal }, vault, 'q')
+  it('环境不支持 followup → 明确报错', async () => {
+    const result = await runAskCommand({}, {}, { commandId: 'c', signal: new AbortController().signal }, vault, 'q')
     expect(result.kind).toBe('error')
-    expect(result.text).toContain('回答调用失败')
-    expect(appended.filter((e) => e.type === 'assistant/message')).toEqual([]) // 无 settle
-    expect(appended.filter((e) => e.type === 'step/end')).toHaveLength(1) // interrupt 收尾
+    expect(result.text).toContain('agent.followup')
   })
 })

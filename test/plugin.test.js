@@ -49,6 +49,7 @@ function createFakeHost(answers = {}) {
   const routes = []
   const routeKeys = new Set()
   const commands = []
+  const tools = []
   const effects = []
   const askLog = []
   const sessions = new Map() // sessionId → { header: { cwd } }（files 路由测试注册）
@@ -57,6 +58,17 @@ function createFakeHost(answers = {}) {
     sessions: {
       get(id) {
         return sessions.get(id)
+      },
+    },
+    // 伪工具注册表：收集 memory_* 真实模型工具定义（工具端到端测试用）
+    tools: {
+      register(definition) {
+        if (tools.some((existing) => existing.name === definition.name)) throw new Error(`duplicate tool ${definition.name}`)
+        tools.push(definition)
+        return () => {
+          const index = tools.indexOf(definition)
+          if (index !== -1) tools.splice(index, 1)
+        }
       },
     },
     // 伪 userQuestions：按问题 id 返回预置答案（端到端注入点）
@@ -106,7 +118,7 @@ function createFakeHost(answers = {}) {
       return dispose
     },
   }
-  return { ctx, routes, commands, effects, settings, askLog, sessions }
+  return { ctx, routes, commands, tools, effects, settings, askLog, sessions }
 }
 
 /** 最小 req/res 桩：驱动一条 exact 路由。 */
@@ -167,12 +179,12 @@ describe('宿主插件装配（apply）', () => {
 
   it('声明稳定的插件名与硬依赖（inject 与代码实际访问的 ctx 服务一致）', async () => {
     expect(name).toBe('memoryleak')
-    expect(inject).toEqual(['webServer', 'commands', 'settings', 'llm'])
+    expect(inject).toEqual(['webServer', 'commands', 'settings', 'tools'])
     // 回归：宿主源码里访问的每个 ctx.<service>（effect 除外）都必须出现在
     // inject 声明里 —— Guard 在属性访问时拦截，桩 ctx 无 Guard 测不出来。
     const hostSources = (
       await Promise.all(
-        ['src/index.js', 'src/routes.js', 'src/note.js', 'src/ask.js', 'src/mail.js'].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')),
+        ['src/index.js', 'src/routes.js', 'src/note.js', 'src/ask.js', 'src/mail.js', 'src/tools.js'].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')),
       )
     ).join('\n')
     const accessed = new Set(hostSources.match(/\bctx\.\w+/g) ?? [])
@@ -1411,15 +1423,39 @@ describe('Vault 与 /ml init（端到端）', () => {
     expect(result.text).toContain('配置不完整')
   })
 
-  it('/ml mail read：已配置但会话未路由模型 → 报错先发消息（下载尚未开始，不触网）', async () => {
+  it('/ml mail read：已配置 → 交接给原生回合（followup 携带 📬 标记与窗口），命令不触网', async () => {
     const mhost = createFakeHost({})
     apply(mhost.ctx)
     const mcommand = mhost.commands.find((definition) => definition.name === 'ml')
     await mhost.settings.update('memoryleak', { vault: workspace, mailHost: 'imap.test.example', mailUser: 'a@b.c', mailPassword: 'secret' })
-    const result = await mcommand.handler({ agent: { id: 'a', session: { header: { cwd: workspace } } }, rawInput: 'mail read', signal: signal() })
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('先发一条消息')
+    const followups = []
+    const result = await mcommand.handler({
+      agent: {
+        id: 'a',
+        session: { header: { cwd: workspace } },
+        followup(message) {
+          followups.push(message)
+        },
+      },
+      rawInput: 'mail read',
+      signal: signal(),
+    })
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('读信任务已交给当前模型')
+    expect(followups).toHaveLength(1)
+    expect(followups[0].role).toBe('user')
+    expect(followups[0].content[0].text).toContain('📬 /ml mail 读信任务')
+    expect(followups[0].content[0].text).toContain('memory_mail_fetch')
+    expect(followups[0].content[0].text).toContain('memory_mail_commit')
     expect(mhost.askLog).toHaveLength(0) // 已配置：read 不弹引导
+  })
+
+  it('注册 5 个真实模型工具（note ×2 / ask ×1 / mail ×2），重复注册会被伪注册表拒绝', async () => {
+    const thost = createFakeHost({})
+    apply(thost.ctx)
+    const names = thost.tools.map((definition) => definition.name)
+    expect(names).toEqual(['memory_note_context', 'memory_note_write', 'memory_ask_gather', 'memory_mail_fetch', 'memory_mail_commit'])
+    expect(thost.tools.every((definition) => typeof definition.execute === 'function')).toBe(true)
   })
 
   it('/ml mail 用法错误走通用错误通道', async () => {

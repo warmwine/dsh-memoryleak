@@ -37,11 +37,9 @@ import {
 import { readVaultNoteConfig, writeVaultSettingsFile } from '../src/vault.js'
 import {
   collectNoteItems,
-  resolveNoteModel,
-  streamNoteCompletion,
   persistNoteResult,
   runNoteCommand,
-  NoteLlmError,
+  NOTE_TOOL_NAME,
   MOMENTO_DIR,
 } from '../src/note.js'
 
@@ -107,7 +105,7 @@ function toolCall(callId, name) {
   return event('tool/call', { turn: 1, step: 1, callId, name, arguments: '{}' })
 }
 
-function toolResult(callId, content) {
+function toolResult(callId, content, isError = false) {
   return event(
     'tool/result',
     {
@@ -116,7 +114,7 @@ function toolResult(callId, content) {
       message: {
         id: `t${nextSeq}`,
         role: 'user',
-        content: [{ type: 'tool-result', toolCallId: callId, content, isError: false }],
+        content: [{ type: 'tool-result', toolCallId: callId, content, isError }],
         source: { kind: 'tool', callId },
       },
     },
@@ -653,120 +651,66 @@ describe('collectNoteItems（区间定位与投影）', () => {
     expect(collectNoteItems(sessionOf(noNote), 'cmd-unknown')).toMatchObject({ hasBoundary: false, items: [{ role: 'user', text: '消息' }] })
   })
 
-  it('上一轮 /ml note 的合成写入结果（ml_note_write）不是对话：不进下个区间；真实工具结果照常收录', () => {
+  it('memory_note_write 的结果是动作记录：失败结果不构成边界也不进区间；成功结果构成边界', () => {
+    nextSeq = 1
+    // 失败的写入（守卫拒绝）：不是边界，身前对话保留；结果本身不进区间
+    const failed = [
+      userMessage('旧'),
+      toolCall('w1', NOTE_TOOL_NAME),
+      toolResult('w1', '合并将丢失已有主键，已拒绝写入', true),
+      userMessage('新'),
+      noteRun('cmd-cur'),
+    ]
+    const failedResult = collectNoteItems(sessionOf(failed), 'cmd-cur')
+    expect(failedResult.hasBoundary).toBe(false)
+    expect(failedResult.items.map((item) => item.text)).toEqual(['旧', '新'])
+
+    // 成功的写入：构成原生边界，之后的内容才是下个区间
+    nextSeq = 1
+    const succeeded = [
+      userMessage('旧'),
+      toolCall('w2', NOTE_TOOL_NAME),
+      toolResult('w2', '已写入 MOMENTO/llm.md'),
+      userMessage('新'),
+      noteRun('cmd-cur'),
+    ]
+    const succeededResult = collectNoteItems(sessionOf(succeeded), 'cmd-cur')
+    expect(succeededResult.hasBoundary).toBe(true)
+    expect(succeededResult.items.map((item) => item.text)).toEqual(['新'])
+  })
+
+  it('原生边界优先于旧版命令边界：只要存在成功的 memory_note_write，交接命令的 done 不再算边界', () => {
     nextSeq = 1
     const events = [
-      userMessage('A'),
-      toolCall('syn-1', 'ml_note_write'),
-      toolResult('syn-1', '已创建'),
+      userMessage('旧纪元对话'),
+      noteRun('cmd-legacy'),
+      noteDone('cmd-legacy'), // 旧版边界
+      userMessage('原生纪元前的对话'),
+      toolCall('w9', NOTE_TOOL_NAME),
+      toolResult('w9', '已写入'),
+      userMessage('交接后的新对话'),
+      noteRun('cmd-cur'), // 新版交接命令（其 done 尚未发生也不影响）
+      noteDone('cmd-cur'),
+      noteRun('cmd-cur2'),
+    ]
+    const { items, hasBoundary } = collectNoteItems(sessionOf(events), 'cmd-cur2')
+    expect(hasBoundary).toBe(true)
+    expect(items.map((item) => item.text)).toEqual(['交接后的新对话'])
+  })
+
+  it('命令生成的消息（交接任务 / 旧版回执）不进区间；真实工具结果照常收录', () => {
+    nextSeq = 1
+    const events = [
+      userMessage('📌 /ml note 整理任务（会话开始 → 本次，2/2 条消息）'),
+      userMessage('❓ /ml ask 提问（引用 3/3 个文件）'),
+      assistantMessage('📌 /ml note 已整理（上次）\n摘要：旧内容'),
+      userMessage('真实对话'),
       toolCall('real-1', 'read'),
       toolResult('real-1', '真实文件内容'),
       noteRun('cmd-cur'),
     ]
     const { items } = collectNoteItems(sessionOf(events), 'cmd-cur')
-    expect(items).toHaveLength(2) // 用户消息 + 真实工具结果；合成结果被排除
-    expect(items[0]).toMatchObject({ role: 'user', text: 'A' })
-    expect(items[1]).toMatchObject({ role: 'tool', name: 'read', text: '真实文件内容' })
-    expect(items.some((item) => item.name === 'ml_note_write')).toBe(false)
-  })
-})
-
-/* ---------------- resolveNoteModel / streamNoteCompletion ---------------- */
-
-describe('resolveNoteModel（当前模型路由）', () => {
-  it('requestHeader 的 config 优先', () => {
-    const agent = {
-      options: { provider: 'fallback', model: 'fb-model' },
-      session: { requestHeader: () => ({ config: { provider: 'deepseek', model: 'chat' } }) },
-    }
-    expect(resolveNoteModel(agent)).toEqual({ provider: 'deepseek', model: 'chat' })
-  })
-
-  it('无 header 时回退 agent.options；两者皆缺 → null', () => {
-    expect(resolveNoteModel({ options: { provider: 'x', model: 'y' }, session: { requestHeader: () => undefined } })).toEqual({ provider: 'x', model: 'y' })
-    expect(resolveNoteModel({ options: {}, session: {} })).toBe(null)
-    expect(resolveNoteModel({})).toBe(null)
-  })
-})
-
-/** 伪 llm 服务：同步吐 chunks。 */
-function fakeLlm(chunks, captured = []) {
-  return {
-    async *stream(options) {
-      captured.push(options)
-      for (const chunk of chunks) yield chunk
-    },
-  }
-}
-
-describe('streamNoteCompletion（压缩调用）', () => {
-  const base = { provider: 'p', model: 'm', prompt: '压缩它' }
-
-  it('累积 text-delta 并返回 usage', async () => {
-    const captured = []
-    const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: '{"a":' }, { type: 'text-delta', index: 0, text: '1}' }, { type: 'usage', usage: { totalTokens: 42 } }, { type: 'finish', reason: { kind: 'stop' } }], captured) }
-    const result = await streamNoteCompletion(ctx, base)
-    expect(result.text).toBe('{"a":1}')
-    expect(result.usage).toEqual({ totalTokens: 42 })
-    const options = captured[0]
-    expect(options.provider).toBe('p')
-    expect(options.model).toBe('m')
-    expect(options.messages).toHaveLength(1)
-    expect(options.messages[0].role).toBe('user')
-    expect(options.messages[0].source.plugin).toBe('dsh-memoryleak')
-    expect(options.messages[0].content[0].text).toBe('压缩它')
-    expect(options.maxTokens).toBe(4096)
-  })
-
-  it('error / max-tokens finish → NoteLlmError', async () => {
-    const bad = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: 'x' }, { type: 'finish', reason: { kind: 'error', failure: { message: '炸了' } } }]) }
-    await expect(streamNoteCompletion(bad, base)).rejects.toThrow(NoteLlmError)
-    const truncated = { llm: fakeLlm([{ type: 'finish', reason: { kind: 'max-tokens' } }]) }
-    await expect(streamNoteCompletion(truncated, base)).rejects.toThrow(/截断/)
-  })
-
-  it('停摆看门狗：无任何输出超过首字超时 → NoteLlmError（不再永久挂起）', async () => {
-    // 复现 2026-09-01 的卡死形态：请求发出后 provider 无响应也不报错
-    const stalled = {
-      llm: {
-        async *stream() {
-          await new Promise(() => {}) // 永不产出
-        },
-      },
-    }
-    await expect(
-      streamNoteCompletion(stalled, { ...base, firstChunkTimeoutMs: 40, idleChunkTimeoutMs: 40 }),
-    ).rejects.toThrow(/首字/)
-  })
-
-  it('停摆看门狗：流中途断流超过空闲超时 → NoteLlmError', async () => {
-    const halfStalled = {
-      llm: {
-        async *stream() {
-          yield { type: 'text-delta', index: 0, text: '说到一半' }
-          await new Promise(() => {}) // 然后停摆
-        },
-      },
-    }
-    await expect(
-      streamNoteCompletion(halfStalled, { ...base, firstChunkTimeoutMs: 1000, idleChunkTimeoutMs: 40 }),
-    ).rejects.toThrow(/流中途/)
-  })
-
-  it('停摆看门狗：chunk 间隔小于空闲超时的正常流不受影响', async () => {
-    const slow = {
-      llm: {
-        async *stream() {
-          yield { type: 'text-delta', index: 0, text: 'a' }
-          await new Promise((resolve) => setTimeout(resolve, 10))
-          yield { type: 'text-delta', index: 0, text: 'b' }
-          await new Promise((resolve) => setTimeout(resolve, 10))
-          yield { type: 'finish', reason: { kind: 'stop' } }
-        },
-      },
-    }
-    const result = await streamNoteCompletion(slow, { ...base, firstChunkTimeoutMs: 1000, idleChunkTimeoutMs: 1000 })
-    expect(result.text).toBe('ab')
+    expect(items.map((item) => item.text)).toEqual(['真实对话', '真实文件内容'])
   })
 })
 
@@ -931,50 +875,59 @@ describe('persistNoteResult / runNoteCommand（端到端落盘）', () => {
     expect(existsSync(join(vault, MOMENTO_DIR, 'databases.md.bak'))).toBe(false)
   })
 
-  it('runNoteCommand：无当前模型 → 报错并提示先发消息', async () => {
-    nextSeq = 1
-    const events = [userMessage('消息'), noteRun('cmd-x')]
-    const session = { events, seq: nextSeq - 1, id: 's', requestHeader: () => undefined }
-    const ctx = { llm: { async *stream() {} } }
-    const result = await runNoteCommand(ctx, { session, options: {} }, { commandId: 'cmd-x', signal: new AbortController().signal }, vault, SETTINGS)
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('当前模型')
-  })
-
-  it('runNoteCommand：成功路径返回汇总（模型 / 文件 / 摘要）', async () => {
+  it('runNoteCommand：有可整理内容 → 交接给原生回合（followup 携带标记、范围与两个工具指引）', async () => {
     nextSeq = 1
     const events = [userMessage('做了 llm 调研'), assistantMessage('结论如下'), noteRun('cmd-ok')]
-    const captured = []
-    const ctx = { llm: fakeLlm([...MODEL_OUTPUT.match(/.*/g)].length ? [
-      { type: 'text-delta', index: 0, text: MODEL_OUTPUT },
-      { type: 'usage', usage: { totalTokens: 1234 } },
-      { type: 'finish', reason: { kind: 'stop' } },
-    ] : [], captured) }
+    const followups = []
     const result = await runNoteCommand(
-      ctx,
-      { session: sessionOf(events) },
+      {},
+      { session: sessionOf(events), followup(message) { followups.push(message) } },
       { commandId: 'cmd-ok', signal: new AbortController().signal },
       vault,
       SETTINGS,
     )
     expect(result.kind).toBe('success')
+    expect(result.text).toContain('整理任务已交给当前模型')
     expect(result.text).toContain('会话开始 → 本次')
     expect(result.text).toContain('2/2 条消息')
-    expect(result.text).toContain('prov/model-x · 1234 tokens')
-    expect(result.text).toContain('## NOTE')
-    // prompt 里带了转写与协议
-    const prompt = captured[0].messages[0].content[0].text
-    expect(prompt).toContain('【用户】\n做了 llm 调研')
-    expect(prompt).toContain('只输出一个 JSON 对象')
+    expect(followups).toHaveLength(1)
+    const handoff = followups[0]
+    expect(handoff.role).toBe('user')
+    expect(handoff.source).toEqual({ kind: 'user' })
+    expect(typeof handoff.id).toBe('string')
+    const text = handoff.content[0].text
+    expect(text).toContain('📌 /ml note 整理任务')
+    expect(text).toContain('memory_note_context')
+    expect(text).toContain('memory_note_write')
+    expect(text).toContain('严禁记录明文密码')
+    expect(text).toContain('增量增补')
+    // 交接消息只做任务说明，不把转写全文塞进上下文（模型本来就看得见对话）
+    expect(text.length).toBeLessThan(2_000)
+    expect(text).not.toContain('【用户】')
   })
 
-  it('runNoteCommand：模型输出不合法 → NoteParseError 变错误结果', async () => {
+  it('runNoteCommand：没有可整理内容 → 报错，不交接', async () => {
     nextSeq = 1
-    const events = [userMessage('消息'), noteRun('cmd-bad')]
-    const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: '我无法输出 JSON' }, { type: 'finish', reason: { kind: 'stop' } }]) }
-    const result = await runNoteCommand(ctx, { session: sessionOf(events) }, { commandId: 'cmd-bad', signal: new AbortController().signal }, vault, SETTINGS)
+    const events = [noteRun('cmd-x')]
+    const followups = []
+    const result = await runNoteCommand(
+      {},
+      { session: sessionOf(events), followup(message) { followups.push(message) } },
+      { commandId: 'cmd-x', signal: new AbortController().signal },
+      vault,
+      SETTINGS,
+    )
     expect(result.kind).toBe('error')
-    expect(result.text).toContain('无法解析')
+    expect(result.text).toContain('还没有可整理的对话内容')
+    expect(followups).toHaveLength(0)
+  })
+
+  it('runNoteCommand：环境不支持 followup → 明确报错', async () => {
+    nextSeq = 1
+    const events = [userMessage('消息'), noteRun('cmd-nofu')]
+    const result = await runNoteCommand({}, { session: sessionOf(events) }, { commandId: 'cmd-nofu', signal: new AbortController().signal }, vault, SETTINGS)
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('agent.followup')
   })
 })
 
@@ -1078,266 +1031,6 @@ describe('createNoteDigestStream（模型输出 → markdown 分段）', () => {
 })
 
 /* ---------------- 流式过程显示（合成会话事件） ---------------- */
-
-describe('runNoteCommand 流式过程（assistant-step 合成事件）', () => {
-  it('成功路径：开始信号 → 模型 deltas → settle 为结果消息（append surface）', async () => {
-    nextSeq = 1
-    const base = [userMessage('做了 llm 调研'), assistantMessage('结论如下'), noteRun('cmd-live')]
-    const { session, appended } = liveSessionOf(base)
-    const ctx = {
-      llm: fakeLlm([
-        { type: 'text-delta', index: 0, text: MODEL_OUTPUT },
-        { type: 'usage', usage: { totalTokens: 99 } },
-        { type: 'finish', reason: { kind: 'stop' } },
-      ]),
-    }
-    const result = await runNoteCommand(ctx, { session }, { commandId: 'cmd-live', signal: new AbortController().signal }, vault, SETTINGS)
-    expect(result.kind).toBe('success')
-
-    const chunks = appended.filter((entry) => entry.type === 'assistant/chunk')
-    const messages = appended.filter((entry) => entry.type === 'assistant/message')
-    expect(messages).toHaveLength(1)
-
-    // step/start 先于一切 chunk（UI 的 assistant-step 投影靠它建立节点）
-    const starts = appended.filter((entry) => entry.type === 'step/start')
-    expect(starts).toHaveLength(1)
-    const synthSteps = appended.filter((entry) => entry.data?.turn === 0).map((entry) => entry.data.step)
-    expect(starts[0].data).toEqual({ turn: 0, step: synthSteps[0] })
-    const firstChunk = appended.find((entry) => entry.type === 'assistant/chunk')
-    expect(starts[0].seq).toBeLessThan(firstChunk.seq)
-
-    // 开始信号是第一条 delta，立即可见（不等模型首 token）
-    const firstDelta = chunks.find((entry) => entry.data.chunk.type === 'text-delta')
-    expect(firstDelta.data.chunk.text).toContain('📌 /ml note 开始整理')
-    expect(firstDelta.data.chunk.text).toContain('2/2 条消息')
-    expect(firstDelta.data.chunk.text).toContain('prov/model-x')
-
-    // 模型输出不再原样转发（原始 JSON 无 markdown 结构，气泡里糊成一团）；
-    // 改为增量解析后的 markdown 分段：摘要 / 工作记录 / 知识条目 / 结构化登记
-    const streamed = chunks
-      .filter((entry) => entry.data.chunk.type === 'text-delta')
-      .map((entry) => entry.data.chunk.text)
-      .join('')
-    expect(streamed).not.toContain('"summary"')
-    expect(streamed).toContain('**摘要** 把 /ml note 命令从零做到能跑')
-    expect(streamed).toContain('**工作记录**\n- core 纯逻辑：转写裁剪、协议解析、渲染\n- 宿主胶水：区间定位、llm 调用、落盘\n\n')
-    expect(streamed).toContain('**知识条目**\n- DSH llm.stream 用法\n- command/run 边界\n\n')
-    expect(streamed).toContain('**结构化登记 · databases**\n- 测试库（sqlite）\n\n')
-    expect(streamed).toContain('**结构化登记 · credentials**\n- GitHub Token（token · 环境变量 GH_TOKEN）\n\n')
-    expect(streamed).toContain('**结构化登记 · glossary**\n- MOMENTO（知识库目录）\n\n')
-    expect(streamed).not.toContain('结构化登记 · servers') // 空类不显示
-    // usage 也转发（log-only）
-    expect(chunks.some((entry) => entry.data.chunk.type === 'usage')).toBe(true)
-
-    // 全部合成事件在 turn 0、step 为非负整数（UI 校验 turn/step ≥ 0）
-    for (const entry of appended.filter((item) => item.data?.turn === 0)) {
-      expect(entry.data.turn).toBe(0)
-      expect(Number.isSafeInteger(entry.data.step)).toBe(true)
-      expect(entry.data.step).toBeGreaterThanOrEqual(0)
-    }
-
-    // settle：append 型 assistant/message，内容以标记开头、带 model source 与 usage；
-    // 气泡回执为 markdown 分块（**摘要** / **写入**），随后 step/end 闭合
-    const settle = messages[0]
-    expect(settle.surfaceOp).toBe('append')
-    expect(settle.data.message.role).toBe('assistant')
-    expect(settle.data.message.source).toEqual({ kind: 'model', provider: 'prov', model: 'model-x' })
-    expect(settle.data.message.content[0].text).toMatch(/^📌 \/ml note 已整理/)
-    expect(settle.data.message.content[0].text).toContain('**摘要**\n把 /ml note 命令从零做到能跑')
-    expect(settle.data.message.content[0].text).toMatch(/\*\*写入\*\*\n- 工作记录 → \S+\.md ## NOTE/)
-    expect(settle.data.message.content[0].text).toContain('· 99 tokens')
-    expect(settle.data.usage).toEqual({ totalTokens: 99 })
-    // 溯源：引用了流式 chunk 的 seq
-    expect(Array.isArray(settle.sourceEventSeqs)).toBe(true)
-    const closeEnd = appended.filter((entry) => entry.type === 'step/end')
-    expect(closeEnd).toHaveLength(1)
-    expect(closeEnd[0].seq).toBeGreaterThan(settle.seq)
-    expect(closeEnd[0].data).toEqual({ turn: 0, step: settle.data.step })
-  })
-
-  it('失败路径：模型输出不合法 → step/end 收尾（interrupt），无 assistant/message', async () => {
-    nextSeq = 1
-    const base = [userMessage('消息'), noteRun('cmd-bad2')]
-    const { session, appended } = liveSessionOf(base)
-    const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: '不是 JSON' }, { type: 'finish', reason: { kind: 'stop' } }]) }
-    const result = await runNoteCommand(ctx, { session }, { commandId: 'cmd-bad2', signal: new AbortController().signal }, vault, SETTINGS)
-    expect(result.kind).toBe('error')
-    expect(appended.filter((entry) => entry.type === 'assistant/message')).toEqual([])
-    const starts = appended.filter((entry) => entry.type === 'step/start')
-    const steps = appended.filter((entry) => entry.type === 'step/end')
-    expect(starts).toHaveLength(1)
-    expect(steps).toHaveLength(1)
-    expect(starts[0].seq).toBeLessThan(steps[0].seq)
-    expect(steps[0].data.turn).toBe(0)
-    expect(steps[0].data.step).toBeGreaterThanOrEqual(0)
-    expect(appended.some((entry) => entry.type === 'assistant/chunk' && entry.data.chunk.text.includes('开始整理'))).toBe(true)
-  })
-
-  it('压缩调用抛错（LLM 故障）→ 同样 step/end 收尾', async () => {
-    nextSeq = 1
-    const base = [userMessage('消息'), noteRun('cmd-err')]
-    const { session, appended } = liveSessionOf(base)
-    const ctx = { llm: fakeLlm([{ type: 'finish', reason: { kind: 'error', failure: { message: '网络炸了' } } }]) }
-    const result = await runNoteCommand(ctx, { session }, { commandId: 'cmd-err', signal: new AbortController().signal }, vault, SETTINGS)
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('网络炸了')
-    expect(appended.filter((entry) => entry.type === 'step/end')).toHaveLength(1)
-  })
-
-  it('多次执行互不串台：step 编号按 run seq 唯一', async () => {
-    nextSeq = 1
-    const base = [userMessage('第一段'), noteRun('cmd-a')]
-    const { session, appended } = liveSessionOf(base)
-    const chunks = [
-      { type: 'text-delta', index: 0, text: JSON.stringify({ summary: '一', note: ['x'] }) },
-      { type: 'finish', reason: { kind: 'stop' } },
-    ]
-    const ctx = { llm: fakeLlm(chunks) }
-    await runNoteCommand(ctx, { session }, { commandId: 'cmd-a', signal: new AbortController().signal }, vault, SETTINGS)
-    const firstSteps = new Set(appended.filter((entry) => entry.data?.turn === 0).map((entry) => entry.data.step))
-    // 模拟第二次执行：新的对话内容 + 新的 run（seq 更大）
-    session.events.push(userMessage('第二段'), noteRun('cmd-b'))
-    await runNoteCommand(ctx, { session }, { commandId: 'cmd-b', signal: new AbortController().signal }, vault, SETTINGS)
-    const allSteps = new Set(appended.filter((entry) => entry.data?.turn === 0).map((entry) => entry.data.step))
-    expect(allSteps.size).toBe(2)
-    expect(firstSteps.size).toBe(1)
-  })
-
-  it('上一次的结果消息不会进入下一次的压缩区间（NOTE_MARK 排除）', async () => {
-    nextSeq = 1
-    // 上一次 note 的 settle 消息在 surface 上（append）
-    const settled = event(
-      'assistant/message',
-      {
-        turn: 0,
-        step: 3,
-        message: {
-          id: 'settled-1',
-          role: 'assistant',
-          content: [{ type: 'text', text: '📌 /ml note 已整理（上次）\n摘要：旧内容' }],
-          source: { kind: 'model', provider: 'p', model: 'm' },
-        },
-      },
-      'append',
-    )
-    const base = [
-      userMessage('旧消息'),
-      event('command/run', { commandId: 'cmd-prev', name: 'ml', args: 'note', source: { kind: 'user' } }),
-      event('command/done', { commandId: 'cmd-prev', kind: 'success', text: 'ok' }),
-      settled,
-      userMessage('新消息'),
-      noteRun('cmd-next'),
-    ]
-    const { items } = collectNoteItems(sessionOf(base), 'cmd-next')
-    expect(items).toHaveLength(1)
-    expect(items[0].text).toBe('新消息')
-  })
-
-  it('思考转发：reasoning-delta 流式显示在块位 0，正文在块位 1（与普通回复的块结构一致）', async () => {
-    nextSeq = 1
-    const base = [userMessage('做了调研'), noteRun('cmd-think')]
-    const { session, appended } = liveSessionOf(base)
-    const ctx = {
-      llm: fakeLlm([
-        { type: 'reasoning-delta', index: 0, text: '先想想摘要怎么写' },
-        { type: 'text-delta', index: 0, text: MODEL_OUTPUT },
-        { type: 'reasoning-delta', index: 0, text: '收尾检查一遍字段' },
-        { type: 'finish', reason: { kind: 'stop' } },
-      ]),
-    }
-    const result = await runNoteCommand(ctx, { session }, { commandId: 'cmd-think', signal: new AbortController().signal }, vault, SETTINGS)
-    expect(result.kind).toBe('success')
-    const reasoning = appended.filter((entry) => entry.type === 'assistant/chunk' && entry.data.chunk.type === 'reasoning-delta')
-    expect(reasoning.length).toBeGreaterThanOrEqual(2)
-    const texts = appended.filter((entry) => entry.type === 'assistant/chunk' && entry.data.chunk.type === 'text-delta')
-    expect(texts.length).toBeGreaterThan(0)
-    for (const entry of reasoning) {
-      expect(entry.data.chunk.index).toBe(0)
-      expect(entry.data.chunk.text).not.toContain('{')
-    }
-    for (const entry of texts) expect(entry.data.chunk.index).toBe(1)
-  })
-
-  it('写入卡片：tool/call 即时出现，settle 消息携带一一对应的 tool-call 块，随后按序补落 tool/result（surface append、溯源 call seq）', async () => {
-    nextSeq = 1
-    const base = [userMessage('做了 llm 调研'), assistantMessage('结论如下'), noteRun('cmd-cards')]
-    const { session, appended } = liveSessionOf(base)
-    const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: MODEL_OUTPUT }, { type: 'finish', reason: { kind: 'stop' } }]) }
-    const result = await runNoteCommand(ctx, { session }, { commandId: 'cmd-cards', signal: new AbortController().signal }, vault, SETTINGS)
-    expect(result.kind).toBe('success')
-
-    const callEvents = appended.filter((entry) => entry.type === 'tool/call')
-    const resultEvents = appended.filter((entry) => entry.type === 'tool/result')
-    const settle = appended.find((entry) => entry.type === 'assistant/message')
-    expect(settle).toBeDefined()
-    // 2 个知识条目 + 3 张结构化表（databases/credentials/glossary）+ index + 日志 = 7 次写入，全部开卡
-    expect(callEvents).toHaveLength(7)
-    expect(resultEvents).toHaveLength(7)
-
-    // 卡片在写入进行中即出现（先于回执消息；转写上 log-only，不进 surface）
-    expect(callEvents[0].seq).toBeLessThan(settle.seq)
-    for (const call of callEvents) {
-      expect(call.surfaceOp).toBeUndefined()
-      expect(call.data.turn).toBe(0)
-      expect(Number.isSafeInteger(call.data.step)).toBe(true)
-      expect(call.data.name).toBe('ml_note_write')
-      expect(() => JSON.parse(call.data.arguments)).not.toThrow()
-      expect(JSON.parse(call.data.arguments)).toMatchObject({ file: expect.any(String) })
-    }
-
-    // 消息内容：文本回执在前，tool-call 块与调用一一对应（同序同 id）
-    expect(settle.data.message.content[0].type).toBe('text')
-    expect(settle.surfaceOp).toBe('append')
-    const blocks = settle.data.message.content.filter((block) => block.type === 'tool-call')
-    expect(blocks).toHaveLength(callEvents.length)
-    expect(blocks.map((block) => block.id)).toEqual(callEvents.map((call) => call.data.callId))
-    expect(blocks.every((block) => block.name === 'ml_note_write')).toBe(true)
-
-    // 结果在消息之后补落（转写合法性：tool 消息必须跟在带 tool_calls 的消息后）
-    expect(resultEvents[0].seq).toBeGreaterThan(settle.seq)
-    expect(resultEvents.map((entry) => entry.data.message.content[0].toolCallId)).toEqual(callEvents.map((call) => call.data.callId))
-    for (const entry of resultEvents) {
-      expect(entry.surfaceOp).toBe('append')
-      expect(entry.data.turn).toBe(0)
-      expect(entry.data.message.role).toBe('user')
-      expect(entry.data.message.source).toEqual({ kind: 'tool', callId: entry.data.message.content[0].toolCallId })
-      expect(entry.data.message.content[0].type).toBe('tool-result')
-      expect(entry.data.message.content[0].isError).toBe(false)
-      const call = callEvents.find((candidate) => candidate.data.callId === entry.data.message.content[0].toolCallId)
-      expect(entry.sourceEventSeqs).toEqual([call.seq])
-    }
-
-    // step/end 收尾在一切之后（无悬挂 open step）
-    const closeEnd = appended.filter((entry) => entry.type === 'step/end')
-    expect(closeEnd).toHaveLength(1)
-    expect(closeEnd[0].seq).toBeGreaterThan(resultEvents.at(-1).seq)
-  })
-
-  it('落盘失败：无回执消息、无 tool/result，已开的卡片由 step/end 收尾为中断（转写不残留孤儿）', async () => {
-    const broken = await mkdtemp(join(tmpdir(), 'dsh-memoryleak-note-broken-'))
-    try {
-      nextSeq = 1
-      // 让**第二个**知识条目的落盘路径变成目录 → 首条开卡写入成功后，第二条在读取时炸
-      await mkdir(join(broken, MOMENTO_DIR), { recursive: true })
-      await mkdir(join(broken, MOMENTO_DIR, `${slugify('command/run 边界')}.md`))
-      const base = [userMessage('做了 llm 调研'), noteRun('cmd-boom')]
-      const { session, appended } = liveSessionOf(base)
-      const ctx = { llm: fakeLlm([{ type: 'text-delta', index: 0, text: MODEL_OUTPUT }, { type: 'finish', reason: { kind: 'stop' } }]) }
-      await expect(
-        runNoteCommand(ctx, { session }, { commandId: 'cmd-boom', signal: new AbortController().signal }, broken, SETTINGS),
-      ).rejects.toThrow(/失败：EISDIR/)
-
-      expect(appended.some((entry) => entry.type === 'tool/call')).toBe(true) // 首条卡片已开
-      expect(appended.filter((entry) => entry.type === 'assistant/message')).toHaveLength(0) // 无回执
-      expect(appended.filter((entry) => entry.type === 'tool/result')).toHaveLength(0) // 无结果事件
-      expect(appended.filter((entry) => entry.type === 'step/end')).toHaveLength(1) // interrupt 收尾
-    } finally {
-      await rm(broken, { recursive: true, force: true })
-    }
-  })
-})
-
-/* ---------------- buildNotePrompt 冒烟 ---------------- */
 
 describe('buildNotePrompt', () => {
   it('包含转写边界与协议字段说明', () => {

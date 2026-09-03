@@ -28,6 +28,15 @@ import { MAX_POSTPONE_DAYS } from './formats/memoryleak-todo.js'
 export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done|cancelled] [关键词] · /ml todo d <序号> · /ml todo c <序号> · /ml todo p <序号> [天数] · /ml todo u · /ml note · /ml ask <问题> · /ml mail [read|setup] · /ml view [文件名片段] · /ml help'
 
 /**
+ * 三个花 token 命令的消息标记（同步维护于 README / help / 测试）：
+ * 命令交接消息与旧版合成回执都以它们开头——collectNoteItems 据此把
+ * 「命令生成物」排除出整理区间（它们不是对话内容）。
+ */
+export const NOTE_MARK = '📌 /ml note'
+export const ASK_MARK = '❓ /ml ask'
+export const MAIL_MARK = '📬 /ml mail'
+
+/**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
  * @returns {{
  *   family: 'init'
@@ -197,22 +206,23 @@ export function renderMlHelp() {
     '/ml todo u（全称 /ml todo undo）',
     '  撤销最近一次 d / c / p，可连续撤销（LIFO）',
     '/ml note',
-    '  用当前模型把「上一个 /ml note 之后 → 现在」的对话（没有则整个会话）',
-    '  压缩成：工作记录（日志 ## NOTE）+ 知识文件（MOMENTO/）+ 结构化登记',
+    '  把「上一个 /ml note 之后 → 现在」的对话（没有则整个会话）整理成：',
+    '  工作记录（日志 ## NOTE）+ 知识文件（MOMENTO/）+ 结构化登记',
     '  （MOMENTO/databases.md、servers.md、credentials.md、glossary.md，',
-    '  表格格式由代码渲染；凭证只记位置，不记明文）',
+    '  表格格式由代码渲染；凭证只记位置，不记明文）。任务交给当前模型在',
+    '  会话里直接完成：思考、工具调用与回复原生显示，与普通对话同款',
     '/ml ask <问题>',
     '  /ml note 的反向：把 Vault 当资料库向当前模型提问（只读，不写 Vault）。',
     '  自动汇集 MOMENTO 知识文件 / 结构化登记 / 近期日志作上下文，',
-    '  按问题关键词挑最相关的资料，回答流式显示在会话里并标注来源文件',
+    '  按问题关键词挑最相关的资料，回答显示在会话里并标注来源文件',
     '/ml mail',
     '  工作邮件：未配置时弹出设置引导（IMAP 服务器 / 账号 / 密码或授权码，',
     '  登陆方式与完整选项在 GUI 设置 → MemoryLeak）；已配置时显示邮箱状态',
     '/ml mail read',
     '  增量阅读邮件：只下载「上次 read 结束 → 现在」的新邮件（首次默认当天）',
     '  到系统临时目录（绝不写进 Vault 或工作区，用完即删；下载与清理全程',
-    '  无模型调用），再用当前模型分析并提取重要事件 / 待办 / 待阅事项。',
-    '  读完把结束时刻记进 Vault 设置，下次从这里继续',
+    '  无模型调用），再由当前模型分析并提取重要事件 / 待办 / 待阅事项。',
+    '  分析完成、报告输出之后才推进读信进度，下次从这里继续',
     '/ml mail setup',
     '  重新走一遍邮箱配置问答（改密码 / 换服务器也用它；配置也可在 GUI',
     '  设置 → MemoryLeak 中填写）',

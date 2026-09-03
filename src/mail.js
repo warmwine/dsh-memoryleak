@@ -17,33 +17,22 @@
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
 import { TodoError } from './core/errors.js'
 import {
-  MAIL_MAX_TOKENS,
-  fitMailEmailsToBudget,
   hasTrustedCertificate,
   isMailConfigured,
   mailWindowLabel,
   mergeTrustedCertificates,
-  parseMailReadJson,
-  renderMailReadMarkdown,
   resolveMailWindow,
   selectMailEmails,
   formatMailMoment,
-  buildMailReadPrompt,
-  createMailDigestStream,
-  MailParseError,
 } from './core/mail.js'
 import { readVaultMailStateEnd, writeVaultMailStateEnd } from './vault.js'
 import { MEMORYLEAK_SETTINGS_NAMESPACE } from './settings-schema.js'
-import { NoteLlmError, createNoteStreamSink, resolveCurrentRunSeq, resolveNoteModel, streamNoteCompletion } from './note.js'
+import { MAIL_MARK } from './core/command.js'
 
-/** 插件版本（回执标注）。 */
-const PLUGIN_VERSION = createRequire(import.meta.url)('../package.json').version
+export { MAIL_MARK }
 
-/** /ml mail 的会话标记（气泡回执前缀；同步维护于 README / help）。 */
-export const MAIL_MARK = '📬 /ml mail'
 
 /** /ml mail 设置引导的问题 id（宿主与客户端的共享协议，两处必须同步改）：
  *  web 端客户端半认领渲染成一张表单卡（三个输入 + 提交），其余环境走
@@ -123,12 +112,12 @@ async function parseEmlWithMailparser(buffer) {
 }
 
 /** 系统临时目录下建一次性目录。 */
-async function makeTempDirUnderTmpdir() {
+export async function makeTempDirUnderTmpdir() {
   return mkdtemp(join(tmpdir(), 'dsh-memoryleak-mail-'))
 }
 
 /** 清扫崩溃残留的临时目录（>24h 的一次性目录；尽力而为，永不抛错）。 */
-async function sweepStaleTempDirs(now = Date.now()) {
+export async function sweepStaleTempDirs(now = Date.now()) {
   try {
     const entries = await readdir(tmpdir())
     await Promise.all(
@@ -595,135 +584,52 @@ async function askMailTrust(ctx, agent, signal, candidate, deps) {
 }
 
 /**
- * /ml mail read 的完整流程（命令 handler 调用）。
+ * /ml mail read：把读信任务交给当前模型的原生回合（命令做薄）。
  *
- * 顺序：模型路由检查（失败早退，不下载）→ 读信窗口（vault 状态 →
- * (start, now]）→ 下载到一次性临时目录（零模型）→ 无新邮件直接返回并
- * 推进状态 → 解析（零模型）→ 预算截断 → 当前模型分析（流式 digest）→
- * settle + 回执 → vault 记录结束时刻 → finally 清理临时目录（零模型）。
+ * 顺序：读信窗口计算（vault 状态 → (start, now]，本地零模型）→ 交接消息
+ * （agent.followup）→ 命令立即返回。真实回合里模型调 memory_mail_fetch
+ * 工具（下载到临时目录、纯代码解析为纯文本、目录即删——全程零模型调用），
+ * 原生思考并输出 markdown 阅读报告，最后调 memory_mail_commit 推进读信
+ * 进度（分析失败不推进，下次重读同一批，绝不漏信）。
+ *
+ * @param {import('@deepseek-ai/cordis').Context} _ctx
+ * @param {{ followup?: Function }} agent
+ * @param {{ commandId: string, signal: AbortSignal }} _invocation
+ * @param {string} vaultDir vault 绝对路径（门控已保证非空）
+ * @param {object} settings 生效设置段
+ * @param {object} [_deps] 测试注入（createClient / parseEml / makeTempDir / sweep / now）
+ * @returns {Promise<{ kind: 'success', text: string } | { kind: 'error', text: string }>}
  */
-export async function runMailReadCommand(ctx, agent, invocation, vaultDir, settings, deps = {}) {
-  const makeTempDir = deps.makeTempDir ?? makeTempDirUnderTmpdir
-  const sweep = deps.sweep ?? sweepStaleTempDirs
-  const now = deps.now ?? (() => new Date())
-
-  const target = resolveNoteModel(agent)
-  if (target === null) {
-    return { kind: 'error', text: '当前会话还没有路由过模型请求，无法确定「当前模型」。先发一条消息再执行 /ml mail read。' }
-  }
-
+export async function runMailReadCommand(_ctx, agent, _invocation, vaultDir, settings, _deps = {}) {
+  const now = new Date()
   const lastEnd = await readVaultMailStateEnd(vaultDir)
-  const window = resolveMailWindow({ lastReadEnd: lastEnd, now })
+  const window = resolveMailWindow({ lastReadEnd: lastEnd, now: () => now })
   const label = mailWindowLabel(window)
-
-  const session = agent.session
-  const stepKey = Math.abs(resolveCurrentRunSeq(session, invocation.commandId) || 1)
-  const sink = typeof session?.append === 'function' ? createNoteStreamSink(session, stepKey) : null
-  if (sink !== null) {
-    sink.begin(`${MAIL_MARK} read 开始（窗口：${label}；模型 ${target.provider}/${target.model}；v${PLUGIN_VERSION}）…\n\n`)
+  if (typeof agent?.followup !== 'function') {
+    return { kind: 'error', text: '当前环境不支持把任务交给模型（缺少 agent.followup 通道），无法执行 /ml mail read。' }
   }
-
-  // 崩溃残留清扫（>24h 的临时目录）——尽力而为，先扫后建。
-  await sweep()
-
-  const dir = await makeTempDir()
-  let downloaded
-  try {
-    // —— 下载段：纯代码，零模型调用 ——
-    try {
-      downloaded = await downloadMailWindowToTemp({ settings, window, dir }, deps)
-    } catch (error) {
-      if (sink !== null) sink.interrupt()
-      if (error instanceof MailError) return { kind: 'error', text: error.message }
-      throw error
-    }
-    const totalInWindow = downloaded.emails.length + downloaded.dropped
-    if (downloaded.emails.length === 0) {
-      // 窗口内没有新邮件：不调模型，直接推进读信进度。
-      await writeMailState(vaultDir, window.end)
-      const text = `窗口内没有新邮件（${label}）。已把读信进度推进到现在，下次从这里继续。`
-      if (sink !== null) sink.settle(`${MAIL_MARK} ${text}`, { kind: 'model', provider: target.provider, model: target.model })
-      return { kind: 'success', text }
-    }
-
-    // —— 解析段：纯代码，零模型调用 ——
-    const digests = await parseEmailFiles(dir, downloaded.emails, deps)
-    const fitted = fitMailEmailsToBudget(digests)
-    const date = `${window.end.getFullYear()}-${String(window.end.getMonth() + 1).padStart(2, '0')}-${String(window.end.getDate()).padStart(2, '0')}`
-    const prompt = buildMailReadPrompt({
-      emails: fitted.emails,
-      windowLabel: label,
-      date,
-      dropped: downloaded.dropped + fitted.dropped,
-      folder: settings.mailFolder,
-    })
-    if (sink !== null) {
-      sink.delta(
-        `已下载 ${downloaded.emails.length} 封（窗口内共 ${totalInWindow} 封${downloaded.dropped > 0 ? `，超上限丢最旧 ${downloaded.dropped} 封` : ''}）→ 系统临时目录（用完即删，此过程零模型调用）→ 开始分析…\n\n`,
-      )
-    }
-
-    // —— 分析段：唯一用到模型的一步 ——
-    const digest = createMailDigestStream()
-    let completion
-    let parsed
-    try {
-      completion = await streamNoteCompletion(ctx, {
-        provider: target.provider,
-        model: target.model,
-        prompt,
-        maxTokens: MAIL_MAX_TOKENS,
-        sessionId: typeof session?.id === 'string' ? session.id : undefined,
-        signal: invocation.signal,
-        ...(sink === null
-          ? {}
-          : {
-              onChunk: (chunk) => {
-                if (chunk.type === 'text-delta') {
-                  const piece = digest.push(chunk.text)
-                  if (piece !== '') sink.delta(piece)
-                } else if (chunk.type === 'reasoning-delta') sink.thinking(chunk.text)
-                else if (chunk.type === 'usage') sink.usage(chunk.usage)
-              },
-            }),
-      })
-      parsed = parseMailReadJson(completion.text)
-    } catch (error) {
-      if (sink !== null) sink.interrupt()
-      if (error instanceof MailParseError) return { kind: 'error', text: `模型输出无法解析：${error.message}` }
-      if (error instanceof NoteLlmError) return { kind: 'error', text: `分析调用失败：${error.message}` }
-      throw error
-    }
-
-    // —— 收尾：记录进度（分析成功才推进；失败重试不会漏邮件）——
-    await writeMailState(vaultDir, window.end)
-
-    const usage = completion.usage
-    const totalTokens = typeof usage?.totalTokens === 'number' ? usage.totalTokens : undefined
-    const modelLine = `模型：${target.provider}/${target.model}${totalTokens !== undefined ? ` · ${totalTokens} tokens` : ''} · dsh-memoryleak v${PLUGIN_VERSION}`
-    const meta = [
-      `已阅读 ${downloaded.emails.length} 封（${label}${downloaded.dropped > 0 ? `；超上限丢最旧 ${downloaded.dropped} 封` : ''}）`,
-      '邮件原文只存在于系统临时目录，本次结束已删除；下载与清理全程零模型调用。',
-      `读信进度已推进到 ${formatMailMoment(window.end)}，下次从这里继续。`,
-    ]
-    if (parsed.warnings.length > 0) meta.push(...parsed.warnings.map((warning) => `注意：${warning}`))
-    meta.push(modelLine)
-
-    const markdown = [`${MAIL_MARK} 阅读完成（${label}）`, '', renderMailReadMarkdown(parsed), '', '---', ...meta.map((item) => `- ${item}`)].join('\n')
-    if (sink !== null) sink.settle(markdown, { kind: 'model', provider: target.provider, model: target.model }, usage)
-    return { kind: 'success', text: markdown }
-  } finally {
-    // —— 清理段：纯代码，零模型调用；无论成败必须删 ——
-    try {
-      await rm(dir, { recursive: true, force: true })
-    } catch {
-      // 删除失败（被占用等）：留给 >24h 的崩溃残留清扫
-    }
+  const handoff = [
+    `${MAIL_MARK} 读信任务（窗口：${label}）`,
+    '请阅读工作邮箱的新邮件并向用户输出阅读报告：',
+    '',
+    '1. 调用 memory_mail_fetch 工具：增量下载并解析「上次读完 → 现在」的新邮件（纯文本、附件不下载；临时目录即用即删，全程零模型调用）。窗口内没有新邮件时工具会直接说明——届时用一句话告知用户即可。',
+    '2. 通读拿到的邮件，输出 markdown 阅读报告：**总评**（一句话整体重要程度与主题）、**重要事件**（按时间序列表）、**待办**（需要用户处理的事，明说期限的标注期限与来源）、**待阅**（不用动手但值得知道的内容）。只依据邮件内容，不要编造。',
+    '3. 报告输出之后，调用 memory_mail_commit 工具推进读信进度（漏调 = 下次重读同一批邮件）。',
+  ].join('\n')
+  agent.followup({
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: handoff }],
+    source: { kind: 'user' },
+  })
+  return {
+    kind: 'success',
+    text: `读信任务已交给当前模型（窗口：${label}）。它会在对话里下载、分析并输出报告；分析完成后才推进读信进度。`,
   }
 }
 
 /** 写读信进度（失败转 MailStateIoError——进度写不进就不推进，宁可重复读）。 */
-async function writeMailState(vaultDir, end) {
+export async function writeMailState(vaultDir, end) {
   try {
     await writeVaultMailStateEnd(vaultDir, end.toISOString())
   } catch (error) {
