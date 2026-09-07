@@ -613,6 +613,12 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (outcome === null || settledRef.current) return;
         settledRef.current = true;
+        // 命令卡定格（运行中 → 完成）：滚到底 + 把焦点还给主输入框。
+        // 焦点问题：dsh 0.1.2 的 contenteditable 输入框在命令执行期间会被
+        // 置为不可编辑（浏览器把焦点丢到 body），完成后框架不恢复——只能
+        // 我们在定格时还回去。问答流（todo add / init / mail setup）不受
+        // 影响：command/done 在问答结束后才发生，此时问题卡已不在。
+        mlFocusMainInput();
         const root = rootRef.current;
         const scroller = root !== null
           ? root.closest("[data-conversation-scroll]")
@@ -1175,6 +1181,9 @@ window.__ModuleLoader__.load({
       requestAnimationFrame(focus);
       setTimeout(focus, 80);
       setTimeout(focus, 300);
+      // 第 4 段兜底：命令卡定格时输入框可能还处于执行期的不可编辑态，
+      // contenteditable 尚未翻回 true——多等一拍再试一次。
+      setTimeout(focus, 700);
     }
 
     /* 接管卡共用壳样式：排版令牌对齐官方 QuestionComposer 的几何（同槽

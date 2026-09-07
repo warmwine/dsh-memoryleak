@@ -6,6 +6,7 @@
 
 - **修复 dsh 升级后 /ml todo add / init / mail setup 表单卡失效、快捷键全部消失的问题**。dsh 0.1.2 升级更换了 `conversation.composer` 链契约：select 入参从「owner.interactions 交互数组」改为 `{ pendingInteraction }` 单载体，组件消费的 matched 也从「interaction.payload.questions + respond 协议」改为官方 `PendingQuestion`（`.questions` / `.answer()` / `.cancel()`）。旧 select 在新契约下永远返回 null，四张接管卡（类型+优先级组合卡、日期选择器、Vault 目录卡、邮箱设置卡）全部静默落回官方通用问答 UI——没有快捷键、没有日历、逐题点提交（正是「看起来退回老版本」的原因；通用 UI 是官方兜底，属优雅降级而非报错）。修复：新增薄适配层把新载体包成组件已消费的旧 wait 形状（payload.questions + respond），四张卡的组件主体零改动，四个 select 迁移到新签名。
 - **修复同一升级导致的「流程结束后光标不回主输入框」**：dsh 0.1.2 把主输入框从 `textarea[data-phase]` 换成了 contenteditable 的 `[data-composer-input]` div，旧锚点选择器永远落空，交互流程（todo add / init / mail setup 等）结束后要手点输入框才能继续打字。`mlFocusMainInput` 现在优先锚 `[data-composer-input][contenteditable='true']`（新旧两个选择器都试，旧环境回退 textarea）。
+- **普通命令执行完也会丢焦（/ml todo、todo d、todo c 等）**：新输入框在命令执行期间会被置为不可编辑（焦点被浏览器丢到 body），完成后框架不恢复——官方 conversation 包里没有任何主输入框焦点还原逻辑。现在 /ml 命令卡定格（运行中 → 完成）时一并把焦点还给输入框（`mlFocusMainInput` 加第 4 段 700ms 兜底，等 contenteditable 翻回可编辑态）。问答流不受影响：`command/done` 在问答结束后才发生，问题卡已不在场。
 
 ## 0.16.2（2026-09-04）
 
