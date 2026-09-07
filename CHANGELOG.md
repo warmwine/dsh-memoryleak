@@ -2,6 +2,11 @@
 
 版本号写在 `package.json`，日期是提交当天。只记用户能感知的变化，内部重构一笔带过。
 
+## 0.16.3（2026-09-07）
+
+- **修复 dsh 升级后 /ml todo add / init / mail setup 表单卡失效、快捷键全部消失的问题**。dsh 0.1.2 升级更换了 `conversation.composer` 链契约：select 入参从「owner.interactions 交互数组」改为 `{ pendingInteraction }` 单载体，组件消费的 matched 也从「interaction.payload.questions + respond 协议」改为官方 `PendingQuestion`（`.questions` / `.answer()` / `.cancel()`）。旧 select 在新契约下永远返回 null，四张接管卡（类型+优先级组合卡、日期选择器、Vault 目录卡、邮箱设置卡）全部静默落回官方通用问答 UI——没有快捷键、没有日历、逐题点提交（正是「看起来退回老版本」的原因；通用 UI 是官方兜底，属优雅降级而非报错）。修复：新增薄适配层把新载体包成组件已消费的旧 wait 形状（payload.questions + respond），四张卡的组件主体零改动，四个 select 迁移到新签名。
+- **修复同一升级导致的「流程结束后光标不回主输入框」**：dsh 0.1.2 把主输入框从 `textarea[data-phase]` 换成了 contenteditable 的 `[data-composer-input]` div，旧锚点选择器永远落空，交互流程（todo add / init / mail setup 等）结束后要手点输入框才能继续打字。`mlFocusMainInput` 现在优先锚 `[data-composer-input][contenteditable='true']`（新旧两个选择器都试，旧环境回退 textarea）。
+
 ## 0.16.2（2026-09-04）
 
 - **`/ml mail read` 报告结构简化：不再区分待办 / 待阅 / 重要事件三类，只输出一份「重要事项」编号清单**——所有重要的事务与信息（需要动手的、需要跟进的、值得知道的）都列在同一份编号列表里，需要处理的条目标注期限与来源。此前「重要事件里明明有需要做的事、待办列表里却没有」的错位不再可能发生：清单里的**每一条**都可以用 `/ml mail todo <编号>` 转成待办（同一套 todo add 表单，期限自动带入）。

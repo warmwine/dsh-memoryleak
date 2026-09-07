@@ -1157,10 +1157,18 @@ window.__ModuleLoader__.load({
 
     /** 交互流程（todo 新增等）结束后把焦点还给主输入框：选日期/点选项会把
      *  焦点带进卡片，流程一结束用户的下一动作几乎总是继续打字。
-     *  textarea[data-phase] 是官方输入框的稳定锚点；卡片卸载与输入区恢复
-     *  存在时序差，rAF + 两段兜底重试（只在元素可用时聚焦，不抢禁用态）。 */
+     *  官方输入框的稳定锚点：dsh 0.1.2 升级前是 textarea[data-phase]，
+     *  升级后是 contenteditable 的 [data-composer-input] div——两个选择器
+     *  都试（新旧环境通吃）。卡片卸载与输入区恢复存在时序差，rAF + 两段
+     *  兜底重试；只在元素可用时聚焦（contenteditable 只在可用态为 true，
+     *  选择器天然滤掉禁用态），不抢禁用。 */
     function mlFocusMainInput() {
       const focus = () => {
+        const editable = document.querySelector("[data-composer-input][contenteditable='true']");
+        if (editable !== null) {
+          editable.focus();
+          return;
+        }
         const area = document.querySelector("textarea[data-phase]");
         if (area !== null && area.disabled !== true) area.focus();
       };
@@ -1223,17 +1231,41 @@ window.__ModuleLoader__.load({
       border: "none", borderRadius: 8, fontSize: 13, lineHeight: "20px",
     };
 
+    /* ---- dsh 0.1.2 升级后的 composer 链契约适配 ----
+       新契约：select 收到 ({ sessionId, session, pendingInteraction })，
+       matched 是官方 PendingQuestion 载体（.questions / .answer() / .cancel()，
+       组件用 props.matched 消费）。旧契约（owner.interactions[].payload +
+       respond 协议）已不存在——旧 select 永远返回 null，全部问题落回官方
+       通用问答 UI（快捷键消失的根因）。这里把载体薄包一层旧 wait 形状
+       （payload.questions + respond），四张接管卡的组件主体零改动。 */
+    function mlAdaptPending(pending) {
+      if (pending === null || typeof pending !== "object") return null;
+      if (pending.kind !== "question" || !Array.isArray(pending.questions)) return null;
+      if (typeof pending.answer !== "function" || typeof pending.cancel !== "function") return null;
+      return {
+        key: pending.key,
+        sessionId: pending.sessionId,
+        payload: { questions: pending.questions },
+        respond(request) {
+          const answers = request?.value?.answer?.answers;
+          const settle = request !== null && typeof request === "object" && request.ok === true && Array.isArray(answers)
+            ? () => pending.answer({ answers })
+            : () => pending.cancel();
+          return settle().then(
+            () => ({ accepted: true }),
+            (error) => ({ accepted: false, reason: error instanceof Error ? error.message : String(error) }),
+          );
+        },
+      };
+    }
+
     /** chain select：只认领「单问题且 id === ml-date」的 question 交互，其余放行。 */
-    function mlSelectDateQuestion(owner) {
-      const interactions = owner !== null && typeof owner === "object" && Array.isArray(owner.interactions) ? owner.interactions : [];
-      for (const interaction of interactions) {
-        if (interaction === null || typeof interaction !== "object" || interaction.kind !== "question") continue;
-        const questions = interaction.payload !== null && typeof interaction.payload === "object" && Array.isArray(interaction.payload.questions)
-          ? interaction.payload.questions
-          : [];
-        if (questions.length === 1 && questions[0] !== null && typeof questions[0] === "object" && questions[0].id === ML_DATE_QUESTION_ID) {
-          return interaction;
-        }
+    function mlSelectDateQuestion({ pendingInteraction }) {
+      const wait = mlAdaptPending(pendingInteraction);
+      if (wait === null) return null;
+      const questions = wait.payload.questions;
+      if (questions.length === 1 && questions[0] !== null && typeof questions[0] === "object" && questions[0].id === ML_DATE_QUESTION_ID) {
+        return wait;
       }
       return null;
     }
@@ -1438,28 +1470,23 @@ window.__ModuleLoader__.load({
        成立（哪一下补全两组，哪一下提交）。改选在补全前随时可换。 */
 
     /** chain select：只认领「ml-type + ml-prio 两问同批」的 question 交互。 */
-    function mlSelectTodoIntro(owner) {
-      const interactions = owner !== null && typeof owner === "object" && Array.isArray(owner.interactions) ? owner.interactions : [];
-      for (const interaction of interactions) {
-        if (interaction === null || typeof interaction !== "object" || interaction.kind !== "question") continue;
-        const questions = interaction.payload !== null && typeof interaction.payload === "object" && Array.isArray(interaction.payload.questions)
-          ? interaction.payload.questions
-          : [];
-        if (questions.length !== 2) continue;
-        let typeQ = null;
-        let prioQ = null;
-        for (const question of questions) {
-          if (question === null || typeof question !== "object") continue;
-          if (question.id === ML_TYPE_QUESTION_ID) typeQ = question;
-          else if (question.id === ML_PRIO_QUESTION_ID) prioQ = question;
-        }
-        if (typeQ === null || prioQ === null) continue;
-        if (typeQ.multiSelect === true || prioQ.multiSelect === true) continue;
-        if (!Array.isArray(typeQ.options) || typeQ.options.length === 0) continue;
-        if (!Array.isArray(prioQ.options) || prioQ.options.length === 0) continue;
-        return interaction;
+    function mlSelectTodoIntro({ pendingInteraction }) {
+      const wait = mlAdaptPending(pendingInteraction);
+      if (wait === null) return null;
+      const questions = wait.payload.questions;
+      if (questions.length !== 2) return null;
+      let typeQ = null;
+      let prioQ = null;
+      for (const question of questions) {
+        if (question === null || typeof question !== "object") continue;
+        if (question.id === ML_TYPE_QUESTION_ID) typeQ = question;
+        else if (question.id === ML_PRIO_QUESTION_ID) prioQ = question;
       }
-      return null;
+      if (typeQ === null || prioQ === null) return null;
+      if (typeQ.multiSelect === true || prioQ.multiSelect === true) return null;
+      if (!Array.isArray(typeQ.options) || typeQ.options.length === 0) return null;
+      if (!Array.isArray(prioQ.options) || prioQ.options.length === 0) return null;
+      return wait;
     }
 
     function MlTodoIntroComposer({ matched }) {
@@ -1663,16 +1690,12 @@ window.__ModuleLoader__.load({
        不存在时由宿主自动创建）。 */
 
     /** chain select：只认领「单问题且 id === ml-vault」的 question 交互。 */
-    function mlSelectVaultQuestion(owner) {
-      const interactions = owner !== null && typeof owner === "object" && Array.isArray(owner.interactions) ? owner.interactions : [];
-      for (const interaction of interactions) {
-        if (interaction === null || typeof interaction !== "object" || interaction.kind !== "question") continue;
-        const questions = interaction.payload !== null && typeof interaction.payload === "object" && Array.isArray(interaction.payload.questions)
-          ? interaction.payload.questions
-          : [];
-        if (questions.length === 1 && questions[0] !== null && typeof questions[0] === "object" && questions[0].id === ML_VAULT_QUESTION_ID) {
-          return interaction;
-        }
+    function mlSelectVaultQuestion({ pendingInteraction }) {
+      const wait = mlAdaptPending(pendingInteraction);
+      if (wait === null) return null;
+      const questions = wait.payload.questions;
+      if (questions.length === 1 && questions[0] !== null && typeof questions[0] === "object" && questions[0].id === ML_VAULT_QUESTION_ID) {
+        return wait;
       }
       return null;
     }
@@ -1969,18 +1992,14 @@ window.__ModuleLoader__.load({
     ML_MAIL_LABELS[ML_MAIL_SECRET_ID] = "密码 / 授权码";
 
     /** chain select：只认领「ml-mail-host + ml-mail-user + ml-mail-secret 三问同批」。 */
-    function mlSelectMailSetup(owner) {
-      const interactions = owner !== null && typeof owner === "object" && Array.isArray(owner.interactions) ? owner.interactions : [];
-      for (const interaction of interactions) {
-        if (interaction === null || typeof interaction !== "object" || interaction.kind !== "question") continue;
-        const questions = interaction.payload !== null && typeof interaction.payload === "object" && Array.isArray(interaction.payload.questions)
-          ? interaction.payload.questions
-          : [];
-        if (questions.length !== 3) continue;
-        const ids = questions.map((q) => (q !== null && typeof q === "object" ? q.id : ""));
-        if (ids.includes(ML_MAIL_HOST_ID) && ids.includes(ML_MAIL_USER_ID) && ids.includes(ML_MAIL_SECRET_ID)) {
-          return interaction;
-        }
+    function mlSelectMailSetup({ pendingInteraction }) {
+      const wait = mlAdaptPending(pendingInteraction);
+      if (wait === null) return null;
+      const questions = wait.payload.questions;
+      if (questions.length !== 3) return null;
+      const ids = questions.map((q) => (q !== null && typeof q === "object" ? q.id : ""));
+      if (ids.includes(ML_MAIL_HOST_ID) && ids.includes(ML_MAIL_USER_ID) && ids.includes(ML_MAIL_SECRET_ID)) {
+        return wait;
       }
       return null;
     }
