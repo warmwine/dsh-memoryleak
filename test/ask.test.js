@@ -180,11 +180,11 @@ describe('runAskCommand（交接给原生回合）', () => {
     expect(followups).toHaveLength(1)
     const handoff = followups[0]
     expect(handoff.role).toBe('user')
-    expect(handoff.source).toEqual({ kind: 'user' })
+    expect(handoff.source).toEqual({ kind: 'plugin', plugin: 'dsh-memoryleak', form: 'notice' })
     expect(typeof handoff.id).toBe('string')
     const text = handoff.content[0].text
     expect(text).toContain(`${ASK_MARK} 提问`)
-    expect(text).toContain('问题：主库端口是多少')
+    expect(text).toContain('问题：「主库端口是多少」')
     expect(text).toContain('memory_ask_gather')
     expect(text).toContain('标注来源文件名')
   })

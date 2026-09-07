@@ -19,8 +19,7 @@ import { createDefaultRegistry } from './core/registry.js'
 import { createScanLimits, createTodoScanner } from './core/scan.js'
 import { createNodeFileSource } from './adapters/node-file-source.js'
 import { makeMemoryleakRoutes } from './routes.js'
-import { recordJournalNote, recordTodoLine, JournalIoError } from './journal.js'
-import { buildStructuredTodoLine } from './core/formats/memoryleak-todo.js'
+import { recordJournalNote, JournalIoError } from './journal.js'
 import { formatDate } from './core/journal.js'
 import {
   MEMORYLEAK_SETTINGS_NAMESPACE,
@@ -39,6 +38,7 @@ import { runNoteCommand } from './note.js'
 import { runAskCommand } from './ask.js'
 import { runMailCommand, MailError } from './mail.js'
 import { registerMemoryleakTools } from './tools.js'
+import { runTodoAddFlow } from './todo-add.js'
 import { NoteParseError } from './core/note.js'
 
 /**
@@ -47,15 +47,14 @@ import { NoteParseError } from './core/note.js'
 export const name = 'memoryleak'
 
 /**
- * /ml todo add 提问轮的问题 id：宿主与客户端的共享协议（两处必须同步改）。
- * web 端客户端半（src/client.js）据此认领 composer：首轮（ml-type + ml-prio）
- * 渲染「两问同卡、各选一项、选完即自动提交」的组合卡（省掉最后的提交
- * 点击），日期轮（ml-date）渲染「日历 + 快捷键」选择器；其余环境仍走
- * 通用问答 UI。答案协议不变：选项走 selected，日期走 custom: yyyy-mm-dd。
+ * /ml todo add 提问轮的问题 id（ml-type / ml-prio / ml-date）已随共享流程
+ * 移入 src/todo-add.js（/ml mail todo <序号> 复用同一套表单）；ml-vault 仍
+ * 是本文件的 Vault 引导问题 id。web 端客户端半（src/client.js）据此认领
+ * composer：首轮（ml-type + ml-prio）渲染「两问同卡、各选一项、选完即自
+ * 动提交」的组合卡（省掉最后的提交点击），日期轮（ml-date）渲染「日历 +
+ * 快捷键」选择器；其余环境仍走通用问答 UI。答案协议不变：选项走
+ * selected，日期走 custom: yyyy-mm-dd。
  */
-const ML_TYPE_QUESTION_ID = 'ml-type'
-const ML_PRIO_QUESTION_ID = 'ml-prio'
-const ML_DATE_QUESTION_ID = 'ml-date'
 const ML_VAULT_QUESTION_ID = 'ml-vault'
 
 /**
@@ -181,7 +180,7 @@ export function apply(ctx) {
       return { kind: 'success', text: `${target.name}\n${'─'.repeat(44)}\n${content.replace(/\n$/, '')}` }
     }
     if (parsed.action === 'add') {
-      return addTodoFlow(agent, cwd, settings, parsed.text, signal)
+      return runTodoAddFlow({ ctx, agent, signal, cwd, settings, text: parsed.text })
     }
     if (parsed.action === 'toggle') {
       return toggleTodoByNumber(agent, cwd, parsed.n)
@@ -421,92 +420,6 @@ export function apply(ctx) {
         '现在可以用 /ml <文本> 记录、/ml todo 管待办、/ml view 查看了。',
       ].join('\n'),
     }
-  }
-
-  /**
-   * /ml todo add 的交互流：固定格式提问（类型 → 优先级 → 日期），全程无 LLM。
-   * ask 请求必须携带命令调用中的 agent：web Provider 依赖 agent.id 把弹窗
-   * 路由到正确的会话（缺省会 ASK_MISSING_AGENT 拒绝）。
-   */
-  async function addTodoFlow(agent, cwd, settings, text, signal) {
-    const userQuestions = ctx.get('userQuestions')
-    if (userQuestions === undefined) {
-      return { kind: 'error', text: '当前环境没有可用的交互提问界面，无法运行 /ml todo add。' }
-    }
-
-    // 第一轮：类型 + 优先级（固定选项）。两问同一批发出：web 端客户端半
-    // 认领渲染成一张组合卡（选完两项即自动提交），其余环境走通用逐题问答。
-    const choice = await userQuestions.ask({
-      agent,
-      signal,
-      questions: [
-        {
-          id: ML_TYPE_QUESTION_ID,
-          header: 'MemoryLeak 待办',
-          question: `待办「${text}」的类型？`,
-          options: [
-            { label: 'deadline', description: '有固定终结日期，到日截止' },
-            { label: 'sleep', description: '先收起，到指定日期唤醒（唤醒前不出现在默认列表）' },
-            { label: 'anytime', description: '随时搞一下，只记录' },
-          ],
-        },
-        {
-          id: ML_PRIO_QUESTION_ID,
-          header: 'MemoryLeak 待办',
-          question: '重要程度？',
-          options: [
-            { label: 'urgent', description: '紧急' },
-            { label: 'medium', description: '中等' },
-            { label: 'low', description: '低优先级' },
-          ],
-        },
-      ],
-    })
-    const type = pick(choice, ML_TYPE_QUESTION_ID, ['deadline', 'sleep', 'anytime'])
-    const prio = pick(choice, ML_PRIO_QUESTION_ID, ['urgent', 'medium', 'low'])
-    if (type === null || prio === null) {
-      return { kind: 'error', text: '选择无效：请从给出的选项中选取待办类型与重要程度。' }
-    }
-
-    // 第二轮：deadline / sleep 需要日期。问题 id 固定为 ML_DATE_QUESTION_ID：
-    // web 端本插件的客户端半认领 composer 渲染日期选择器（日历 + 今天/明天/
-    // 本周/本月快捷键）；其余环境（TUI/原生）仍是自由输入。答案统一走
-    // custom: yyyy-mm-dd，格式裁决留在宿主。
-    let date = null
-    if (type === 'deadline' || type === 'sleep') {
-      const hint = type === 'deadline' ? '截止日期' : '唤醒日期'
-      const answer = await userQuestions.ask({
-        agent,
-        signal,
-        questions: [{ id: ML_DATE_QUESTION_ID, header: 'MemoryLeak 待办', question: `${hint}是哪天？（yyyy-mm-dd）` }],
-      })
-      const raw = (answer?.answers?.find((entry) => entry.id === ML_DATE_QUESTION_ID)?.custom ?? '').trim()
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-        return { kind: 'error', text: `日期格式无效（收到 "${raw}"），需要 yyyy-mm-dd。待办未写入。` }
-      }
-      date = raw
-    }
-
-    const todoLine = buildStructuredTodoLine({ type, date, prio, text })
-    const record = await recordTodoLine({ cwd, settings, todoLine })
-    const label = todoLabelOf(type, date, prio)
-    const suffix = record.created ? '（新建文件）' : ''
-    return { kind: 'success', text: `已添加 → ${record.file} ## Todo${suffix}\n${todoLine}\n${label}` }
-  }
-
-  /** 从 ask 答案中取出一个合法选项值（label 精确匹配，防自定义文本注入）。 */
-  function pick(answer, id, allowed) {
-    const selected = answer?.answers?.find((entry) => entry.id === id)?.selected ?? []
-    const label = Array.isArray(selected) ? selected[0] : undefined
-    return typeof label === 'string' && allowed.includes(label) ? label : null
-  }
-
-  /** 待办的人类可读摘要。 */
-  function todoLabelOf(type, date, prio) {
-    const names = { deadline: '截止型', sleep: '睡眠型（到日唤醒）', anytime: '随时型' }
-    const prioNames = { urgent: '紧急', medium: '中等', low: '低优先级' }
-    const datePart = date === null ? '' : `，日期 ${date}`
-    return `（${names[type]}${datePart}，${prioNames[prio]}）`
   }
 
   /** 包装：可预期故障 → 命令错误结果；未知异常原样上抛（可见崩溃）。 */

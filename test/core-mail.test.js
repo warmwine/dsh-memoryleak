@@ -18,6 +18,7 @@ import {
   parseMailStateEnd,
   renderMailReadMarkdown,
   resolveMailWindow,
+  sanitizeMailTodoItems,
   selectMailEmails,
 } from '../src/core/mail.js'
 
@@ -32,6 +33,43 @@ describe('isMailConfigured（配置判定）', () => {
     expect(isMailConfigured({ mailAuth: 'xoauth2', mailHost: 'imap.x.com', mailUser: 'a@b.c', mailPassword: 'pw', mailToken: '' })).toBe(false)
     expect(isMailConfigured({ mailHost: '', mailUser: 'a@b.c', mailPassword: 'pw' })).toBe(false)
     expect(isMailConfigured(undefined)).toBe(false)
+  })
+})
+
+describe('sanitizeMailTodoItems（memory_mail_commit 提交的待办清单清洗）', () => {
+  it('合法条目清洗通过：期限白名单、来源限长', () => {
+    const { items, warnings } = sanitizeMailTodoItems([
+      { text: '回复周报', due: '2026-09-05', from: 'boss@b.c', subject: '周报' },
+      { text: '顺手看看', due: '下周三', from: '', subject: '' },
+    ])
+    expect(warnings).toEqual([])
+    expect(items).toHaveLength(2)
+    expect(items[0]).toEqual({ text: '回复周报', due: '2026-09-05', from: 'boss@b.c', subject: '周报' })
+    // 非法期限清成空串
+    expect(items[1].due).toBe('')
+  })
+
+  it('缺 text 丢弃并告警；非对象行忽略', () => {
+    const { items, warnings } = sanitizeMailTodoItems([{ text: '  ' }, '垃圾', null, { text: '有效' }])
+    expect(items).toHaveLength(1)
+    expect(items[0].text).toBe('有效')
+    expect(warnings.some((item) => item.includes('缺 text'))).toBe(true)
+  })
+
+  it('undefined/null 视为未提交（无告警）；非数组给告警', () => {
+    expect(sanitizeMailTodoItems(undefined)).toEqual({ items: [], warnings: [] })
+    expect(sanitizeMailTodoItems(null)).toEqual({ items: [], warnings: [] })
+    const { warnings } = sanitizeMailTodoItems('不是数组')
+    expect(warnings).toHaveLength(1)
+  })
+
+  it('条数上限与超长清洗', () => {
+    const { items, warnings } = sanitizeMailTodoItems(
+      Array.from({ length: 35 }, (_, index) => ({ text: `待办${index}` + '长'.repeat(220) })),
+    )
+    expect(items).toHaveLength(30)
+    expect(items[0].text.length).toBeLessThanOrEqual(200)
+    expect(warnings.some((item) => item.includes('上限'))).toBe(true)
   })
 })
 

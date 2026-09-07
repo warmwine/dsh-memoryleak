@@ -58,8 +58,8 @@ export const MOMENTO_DIR = 'MOMENTO'
 export const NOTE_TOOL_NAME = 'memory_note_write'
 
 /** /ml note 交接消息（与旧版合成回执）共用的固定标记。 */
-export { NOTE_MARK, ASK_MARK, MAIL_MARK } from './core/command.js'
-import { NOTE_MARK, ASK_MARK, MAIL_MARK } from './core/command.js'
+export { NOTE_MARK, ASK_MARK, MAIL_MARK, HANDOFF_SOURCE } from './core/command.js'
+import { NOTE_MARK, ASK_MARK, MAIL_MARK, HANDOFF_SOURCE } from './core/command.js'
 
 /** 命令生成的消息（交接任务 / 旧版回执）前缀集合——都不是对话内容。 */
 const ML_COMMAND_MARKS = [NOTE_MARK, ASK_MARK, MAIL_MARK]
@@ -593,19 +593,13 @@ export async function runNoteCommand(_ctx, agent, invocation, vaultDir, _setting
   }
 
   const scope = hasBoundary ? '上一个 /ml note → 本次' : '会话开始 → 本次'
+  // 静态协议住在工具描述与 memory_note_context 的返回里（模型每次请求都看得
+  // 见），交接消息只携带动态事实。source 用 plugin（而非 user）：UI 把它渲染
+  // 成折叠的「注入上下文」行（notice 形态收起时显示第一行），不再撑开一整个
+  // 用户气泡——指令照常进模型上下文，对话框里只留一行摘要。
   const handoff = [
     `${NOTE_MARK} 整理任务（${scope}，${transcript.included}/${transcript.total} 条消息${transcript.truncated ? '，超预算已裁剪' : ''}）`,
-    `今天是 ${noteDate()}。请把上面这段对话整理进 MemoryLeak 知识库（Vault：${vaultDir}）：`,
-    '',
-    '1. 先调用 memory_note_context 工具：获取存量登记（结构化表格行、已有知识标题）、记录约定（noteSkill）与结构化字段说明。',
-    '2. 再调用 memory_note_write 工具提交整理结果，参数即整理协议：',
-    '   - summary：本段工作的一句话总结（不超过 80 字）',
-    '   - note：工作流水条目（3–8 条，一句话一条；没有就给空数组）',
-    '   - momento.entries：值得长期保留的知识（title 简短稳定 / body 正文 / tags；没有就给空数组）',
-    '   - structured：databases / servers / credentials / glossary，只登记对话中真实出现的信息，字段没提到就留空字符串',
-    '   - 严禁记录明文密码或密钥；credentials 只登记「在哪、什么账号」',
-    '3. 增量增补：context 里的存量条目只输出新增或有变化的部分，不要重复输出已有内容。',
-    '4. 提交成功后，用一两句话向用户确认写了哪些文件即可。',
+    `请把上面的对话整理进 MemoryLeak 知识库（Vault：${vaultDir}；今天 ${noteDate()}）：先调 memory_note_context 拿存量登记与记录约定，再调 memory_note_write 提交整理结果。增量增补，不要重复已有内容；凭证只记位置，严禁记录明文密码。完成后用一两句话向用户确认写了哪些文件。`,
   ].join('\n')
   if (typeof agent?.followup !== 'function') {
     return { kind: 'error', text: '当前环境不支持把任务交给模型（缺少 agent.followup 通道），无法执行 /ml note。' }
@@ -614,7 +608,7 @@ export async function runNoteCommand(_ctx, agent, invocation, vaultDir, _setting
     id: crypto.randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: handoff }],
-    source: { kind: 'user' },
+    source: HANDOFF_SOURCE,
   })
   return {
     kind: 'success',

@@ -174,7 +174,7 @@ export async function writeVaultSettingsFile(vaultDir, section) {
 }
 
 /**
- * 读 vault 限定的 /ml mail 读信状态（mailState.lastReadEnd，ISO 字符串）。
+ * 读 /ml mail 读信进度（mailState.lastReadEnd，ISO 字符串）。
  * 文件缺失 / 解析失败 / 形状不对一律返回 null（视为从未读过，回退当天）。
  *
  * @param {string} vaultDir vault 绝对路径
@@ -192,15 +192,44 @@ export async function readVaultMailStateEnd(vaultDir) {
 }
 
 /**
- * 写 /ml mail 读信进度（mailState.lastReadEnd）：读 vault 设置文件 → 只改
- * mailState 键 → 原样写回（其余键全部保留，含 note 配置与注释性结构）。
- * 文件不存在时新建。读信进度只住 vault 层——换机器拷走 Vault，增量进度
- * 跟着走。
+ * 读最近一次 /ml mail read 的可寻址重要事项清单（mailState.lastItems，由
+ * memory_mail_commit 随进度一起提交；0.16.1 的旧字段名 lastTodos 兼容
+ * 回读）。文件缺失 / 解析失败 / 形状不对一律返回空数组。
+ *
+ * @param {string} vaultDir vault 绝对路径
+ * @returns {Promise<Array<{ text: string, due: string, from: string, subject: string }>>}
+ */
+export async function readVaultMailTodos(vaultDir) {
+  try {
+    const parsed = YAML.parse(await readFile(resolve(vaultDir, VAULT_SETTINGS_FILENAME), 'utf8'))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+    const items = parsed.mailState?.lastItems ?? parsed.mailState?.lastTodos
+    if (!Array.isArray(items)) return []
+    return items
+      .filter((item) => item !== null && typeof item === 'object' && typeof item.text === 'string' && item.text.trim() !== '')
+      .map((item) => ({
+        text: item.text,
+        due: typeof item.due === 'string' ? item.due : '',
+        from: typeof item.from === 'string' ? item.from : '',
+        subject: typeof item.subject === 'string' ? item.subject : '',
+      }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 写 /ml mail 读信状态（mailState.lastReadEnd + 可选 lastItems 重要事项清单）：
+ * 读 vault 设置文件 → 只改 mailState 键 → 原样写回（其余键全部保留，含
+ * note 配置）。文件不存在时新建。读信状态只住 vault 层——换机器拷走
+ * Vault，增量进度与重要事项清单跟着走。
  *
  * @param {string} vaultDir vault 绝对路径
  * @param {string} lastReadEndIso 结束时刻（new Date(...).toISOString()）
+ * @param {Array<{ text: string, due: string, from: string, subject: string }> | null} [items]
+ *   本次 read 的重要事项清单（memory_mail_commit 提交）；null = 保持原值不动
  */
-export async function writeVaultMailStateEnd(vaultDir, lastReadEndIso) {
+export async function writeVaultMailStateEnd(vaultDir, lastReadEndIso, items = null) {
   const target = resolve(vaultDir, VAULT_SETTINGS_FILENAME)
   let parsed = {}
   try {
@@ -209,10 +238,14 @@ export async function writeVaultMailStateEnd(vaultDir, lastReadEndIso) {
   } catch {
     parsed = {} // 文件缺失/损坏：从空对象重建（其余内容本就无法解析）
   }
-  parsed.mailState = { ...(parsed.mailState ?? {}), lastReadEnd: lastReadEndIso }
+  parsed.mailState = {
+    ...(parsed.mailState ?? {}),
+    lastReadEnd: lastReadEndIso,
+    ...(items !== null ? { lastItems: items } : {}),
+  }
   const head =
     '# MemoryLeak vault 设置（与 GUI 保存同步；此文件的键覆盖 ~/.dsh/settings.yaml 的 memoryleak: 段，vault 路径与邮箱账号除外）\n' +
-    '# mailState（/ml mail 的读信进度）为 vault 限定状态；同步保存会原样保留\n'
+    '# mailState（/ml mail 的读信进度与重要事项清单）为 vault 限定状态；同步保存会原样保留\n'
   await writeFile(target, head + YAML.stringify(parsed), 'utf8')
 }
 

@@ -651,6 +651,175 @@ window.__ModuleLoader__.load({
         body);
     }
 
+    /* ---------------- MemoryLeak 工具卡片（tool.call.toolview）----------------
+       /ml note·ask·mail 的真实模型工具（memory_*）在会话里用统一的紧凑行
+       展示：「MemoryLeak 邮件工具 · 增量读取新邮件」这样的形态，替代通用
+       卡的「Tool call + 原始 JSON」。与官方 ui-skill 的 SkillRow 同款契约：
+       按工具名注册 keyed toolview，行模型只从冻结的调用/结果切片派生
+       （running 无 kind，settled 有 kind），展开看结果全文。样式自包含，
+       不依赖 primitives 包。 */
+    const ML_TOOL_STYLE_ID = "dsh-memoryleak/tool-row";
+    if (typeof document !== "undefined" && document.querySelector('style[data-ml-style="' + ML_TOOL_STYLE_ID + '"]') === null) {
+      const style = document.createElement("style");
+      style.dataset.mlStyle = ML_TOOL_STYLE_ID;
+      style.textContent = [
+        ".ml-tool-card{display:flex;flex-direction:column}",
+        ".ml-tool-row{position:relative;display:flex;align-items:center;overflow:hidden;height:24px;min-width:0}",
+        ".ml-tool-row[data-expandable]{cursor:pointer}",
+        ".ml-tool-card[data-state=running] .ml-tool-row:after{content:'';position:absolute;inset:0 auto 0 0;width:300px;pointer-events:none;background:linear-gradient(90deg,transparent 0%,color-mix(in srgb,var(--dsw-alias-bg-base) 60%,transparent) 55%,transparent 100%);animation:ml-tool-row-sweep 2.6s ease-out infinite}",
+        "@keyframes ml-tool-row-sweep{0%{left:-300px}90%,100%{left:100%}}",
+        ".ml-tool-leading{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:none;width:16px;height:16px;margin-right:6px;color:var(--dsw-alias-label-tertiary)}",
+        ".ml-tool-dot{width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-caption)}",
+        ".ml-tool-dot[data-state=error]{background:var(--dsw-alias-state-error-primary)}",
+        ".ml-tool-dot[data-state=stopped]{background:var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-error-primary))}",
+        ".ml-tool-title{flex:none;color:var(--dsw-alias-label-secondary);font-size:14px;line-height:24px}",
+        ".ml-tool-sep{flex:none;width:2px;height:2px;margin:0 8px;border-radius:1px;background:var(--dsw-alias-label-caption)}",
+        ".ml-tool-summary{flex:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:24px}",
+        ".ml-tool-summary[data-error]{color:var(--dsw-alias-state-error-primary)}",
+        ".ml-tool-visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}",
+        ".ml-tool-body{display:flex;flex-direction:column}",
+        ".ml-tool-output-card{display:flex;flex-direction:column;max-height:260px;margin:4px 0 4px 4px;overflow:hidden;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-markdown-code-block)}",
+        ".ml-tool-output-header{padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-markdown-code-block-banner);color:var(--dsw-alias-label-caption);font-size:12px}",
+        ".ml-tool-output{margin:0;padding:8px 10px;overflow:auto;color:var(--dsw-alias-label-primary);font-family:var(--dsw-alias-font-mono,monospace);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}",
+        ".ml-tool-inspect{display:inline-flex;align-items:center;gap:4px;align-self:flex-end;margin:0 4px 4px;padding:2px 8px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}",
+        ".ml-tool-inspect:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+      ].join("\n");
+      document.head.appendChild(style);
+    }
+
+    /** 各工具的卡片标题与收起摘要（摘要优先取调用参数里的对应字段）。 */
+    const ML_TOOL_META = {
+      memory_note_context: { title: "MemoryLeak 笔记工具", summary: "读取存量登记与记录约定" },
+      memory_note_write: { title: "MemoryLeak 笔记工具", summary: "提交整理结果", summaryArg: "summary" },
+      memory_ask_gather: { title: "MemoryLeak 问答工具", summary: "汇集 Vault 资料", summaryArg: "question" },
+      memory_mail_fetch: { title: "MemoryLeak 邮件工具", summary: "增量读取新邮件" },
+      memory_mail_commit: { title: "MemoryLeak 邮件工具", summary: "推进读信进度" },
+    };
+
+    function mlFirstLine(text) {
+      const index = String(text).indexOf("\n");
+      return index === -1 ? String(text) : String(text).slice(0, index);
+    }
+
+    /** 展平结果块为展示文本（与官方 ui-tool 的 resultText 契约一致）。 */
+    function mlToolResultText(block) {
+      if (typeof block !== "object" || block === null || !("kind" in block)) return null;
+      const parts = [];
+      const content = Array.isArray(block.content) ? block.content : [];
+      for (const item of content) parts.push(item && item.type === "text" ? item.text : JSON.stringify(item, null, 2));
+      if (parts.length === 0 && block.error !== undefined) parts.push(block.error.name + ": " + block.error.code);
+      return parts.join("\n") || null;
+    }
+
+    /** 行模型：只从冻结的调用/结果切片派生（running 无 kind；settled 有 kind）。 */
+    function mlToolRowModel(toolName, block) {
+      const meta = ML_TOOL_META[toolName] || { title: "MemoryLeak 工具", summary: "" };
+      const settled = typeof block === "object" && block !== null && "kind" in block;
+      const argsRaw = (settled ? (block.call && block.call.argsRaw) : block && block.argsRaw) || "";
+      const state = !settled
+        ? "running"
+        : block.error && block.error.code === "interrupted"
+          ? "stopped"
+          : block.isError ? "error" : "ok";
+      const output = settled ? mlToolResultText(block) : null;
+      let argSummary = null;
+      if (meta.summaryArg && argsRaw !== "") {
+        try {
+          const parsed = JSON.parse(argsRaw);
+          if (parsed !== null && typeof parsed === "object" && typeof parsed[meta.summaryArg] === "string" && parsed[meta.summaryArg] !== "") {
+            argSummary = mlFirstLine(parsed[meta.summaryArg]);
+          }
+        } catch { /* 参数不是 JSON：退回静态摘要 */ }
+      }
+      return {
+        title: meta.title,
+        summary: argSummary || meta.summary,
+        output,
+        state,
+        errorSummary: state === "error" && output !== null ? mlFirstLine(output) : null,
+      };
+    }
+
+    /**
+     * MemoryLeak 工具的紧凑卡片行：收起 = 标题 · 摘要（错误时摘要替换为
+     * 错误首行）；运行中带扫光与「正在调用 …」隐藏播报；结果可展开看全文。
+     */
+    function MemoryLeakToolRow(props) {
+      const model = mlToolRowModel(props.toolName, props.block);
+      const expanded = React.useState(false);
+      const setExpanded = expanded[1];
+      const expandable = model.output !== null;
+      const open = expanded[0] && expandable;
+      const toggle = () => setExpanded((value) => !value);
+      const toggleFromKeyboard = (event) => {
+        if (!expandable || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        toggle();
+      };
+      const status = model.state === "running"
+        ? "正在调用 " + model.title
+        : model.state === "error" ? "MemoryLeak 工具调用失败"
+        : model.state === "stopped" ? "MemoryLeak 工具调用已中止"
+        : null;
+      const summaryText = model.errorSummary !== null ? model.errorSummary : model.summary;
+      const disclosureProps = expandable
+        ? {
+            role: "button",
+            tabIndex: 0,
+            "aria-expanded": open,
+            onClick: toggle,
+            onKeyDown: toggleFromKeyboard,
+          }
+        : {};
+      const children = [
+        React.createElement("span", { key: "lead", className: "ml-tool-leading" },
+          React.createElement("span", { className: "ml-tool-dot", "data-state": model.state })),
+        status !== null
+          ? React.createElement("span", { key: "status", className: "ml-tool-visually-hidden" }, status)
+          : null,
+        React.createElement("span", { key: "title", className: "ml-tool-title" }, model.title),
+        React.createElement("span", { key: "sep", className: "ml-tool-sep", "aria-hidden": "true" }),
+        React.createElement("span", {
+          key: "summary",
+          className: "ml-tool-summary",
+          "data-error": model.errorSummary !== null || undefined,
+        }, summaryText),
+      ];
+      const body = open
+        ? React.createElement("div", { key: "body", className: "ml-tool-body" },
+            React.createElement("section", { className: "ml-tool-output-card", "aria-label": model.title },
+              React.createElement("div", { className: "ml-tool-output-header" }, "工具输出"),
+              React.createElement("pre", {
+                className: "ml-tool-output",
+                "data-error": model.state === "error" || undefined,
+              }, model.output)),
+            typeof props.inspect === "function"
+              ? React.createElement("button", { type: "button", className: "ml-tool-inspect", onClick: props.inspect }, "Inspect")
+              : null)
+        : null;
+      return React.createElement("div",
+        {
+          className: "ml-tool-card",
+          "data-tool": props.toolName,
+          "data-state": model.state,
+        },
+        React.createElement("div", {
+          className: "ml-tool-row",
+          "data-expandable": expandable || undefined,
+          ...disclosureProps,
+        }, children.filter((child) => child !== null)),
+        body);
+    }
+
+    function mlRegisterToolViews(ctx) {
+      for (const toolName of Object.keys(ML_TOOL_META)) {
+        ctx.slots.inject("tool.call.toolview", () => ctx.slots.register(
+          { name: "tool.call.toolview", key: toolName },
+          (props) => React.createElement(MemoryLeakToolRow, props),
+        ));
+      }
+    }
+
     /* ---------------- /ml 快速打开（popupSelect 壳）----------------
        从命令菜单选中 /ml 时，不再直接占用输入框，而是在输入框上方弹出
        「快速打开」选择卡（官方 popupSelect 壳）：自带搜索框本地过滤，
@@ -2038,6 +2207,9 @@ window.__ModuleLoader__.load({
           ? React.createElement(QuickOpenOverlay, props)
           : null
       ));
+
+      // memory_* 真实模型工具的统一紧凑卡片（替代通用卡的「Tool call」行）。
+      mlRegisterToolViews(ctx);
     }
 
     exports.apply = apply;

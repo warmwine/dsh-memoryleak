@@ -13,7 +13,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { TodoError } from './core/errors.js'
 import { readVaultNoteConfig } from './vault.js'
-import { ASK_MARK } from './core/command.js'
+import { ASK_MARK, HANDOFF_SOURCE } from './core/command.js'
 import { resolveStructuredTargets, DEFAULT_STRUCTURED_TARGETS } from './core/note.js'
 import {
   ASK_BUDGET_CHARS,
@@ -158,21 +158,17 @@ export async function runAskCommand(_ctx, agent, _invocation, vaultDir, question
   if (typeof agent?.followup !== 'function') {
     return { kind: 'error', text: '当前环境不支持把任务交给模型（缺少 agent.followup 通道），无法执行 /ml ask。' }
   }
+  // 交接消息只携带动态事实（问题原文；回答规则在 gather 工具的结果里随资
+  // 料带出）。source 用 plugin——UI 渲染成折叠的「注入上下文」行。
   const handoff = [
     `${ASK_MARK} 提问（引用 ${included}/${total} 个文件）`,
-    `请回答下面这个关于 MemoryLeak 笔记库（Vault：${vaultDir}）的问题：`,
-    '',
-    `问题：${question}`,
-    '',
-    '1. 先调用 memory_ask_gather 工具（question 传上面的问题原文）：获取按相关度选取的 Vault 资料包。',
-    '2. 只依据资料回答；资料里没有的就直说笔记里没有，不要编造；引用事实时标注来源文件名（如「MOMENTO/databases.md」）。',
-    '3. 用中文 markdown 结构化回答（先结论后依据）；资料有过时或矛盾之处如实指出。',
+    `请回答关于 MemoryLeak 笔记库（Vault：${vaultDir}）的问题：「${question}」。先调 memory_ask_gather（question 传问题原文）拿资料包，只依据资料回答、标注来源文件名，资料里没有的就直说没有；用中文 markdown 结构化（先结论后依据）。`,
   ].join('\n')
   agent.followup({
     id: crypto.randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: handoff }],
-    source: { kind: 'user' },
+    source: HANDOFF_SOURCE,
   })
   return {
     kind: 'success',

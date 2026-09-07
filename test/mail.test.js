@@ -4,7 +4,7 @@
  * 真实 fs（验证「用完即删」）。
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { mkdtemp, rm, stat, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, stat, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import YAML from 'yaml'
@@ -348,11 +348,12 @@ describe('runMailCommand · read', () => {
     expect(followups).toHaveLength(1)
     const text = followups[0].content[0].text
     expect(followups[0].role).toBe('user')
+    expect(followups[0].source).toEqual({ kind: 'plugin', plugin: 'dsh-memoryleak', form: 'notice' })
     expect(text).toContain('📬 /ml mail 读信任务')
     expect(text).toContain('窗口：')
     expect(text).toContain('memory_mail_fetch')
     expect(text).toContain('memory_mail_commit')
-    expect(text).toContain('漏调 = 下次重读同一批邮件')
+    expect(text).toContain('漏调 = 下次重读同一批')
   })
 
   it('首次使用（vault 无状态）→ 交接消息的窗口为「今天 00:00」起', async () => {
@@ -548,6 +549,75 @@ describe('runMailCommand · setup / 裸命令', () => {
     expect(ctx.askLog[1].questions[0].question).toContain('取证失败')
     expect(patches[0].patch.mailTlsInsecure).toBe(true)
     expect(result.text).toContain('跳过证书校验')
+  })
+})
+
+/* ---------------- mail todo <序号>（引用上次 read 报告的待办） ---------------- */
+
+describe('runMailCommand · mail todo <序号>', () => {
+  const TODOS = [
+    { text: '回复周报', due: '2026-09-05', from: 'boss@b.c', subject: '周报' },
+    { text: '看新规范', due: '', from: 'pm@b.c', subject: '规范' },
+  ]
+
+  function todoCtx(answers, asks = []) {
+    return {
+      get: () => ({
+        ask: async (request) => {
+          asks.push(request)
+          return {
+            answers: (request.questions ?? []).map((question) => {
+              const preset = answers[question.id]
+              return preset !== undefined
+                ? { id: question.id, selected: [preset] }
+                : { id: question.id, selected: [], custom: '' }
+            }),
+          }
+        },
+      }),
+    }
+  }
+
+  it('清单为空 → 报错指引先 read', async () => {
+    await rm(join(vault, VAULT_SETTINGS_FILENAME), { force: true })
+    const ctx = todoCtx({})
+    const result = await runMailCommand(ctx, { session: sessionStub().session }, invocationOf(), { action: 'todo', n: 1 }, vault, mailSettings(), {})
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('先执行 /ml mail read')
+  })
+
+  it('序号超范围 → 报错并列出总量', async () => {
+    await writeVaultMailStateEnd(vault, LAST_END.toISOString(), TODOS)
+    const ctx = todoCtx({})
+    const result = await runMailCommand(ctx, { session: sessionStub().session }, invocationOf(), { action: 'todo', n: 3 }, vault, mailSettings(), {})
+    expect(result.kind).toBe('error')
+    expect(result.text).toContain('共 2 条重要事项')
+  })
+
+  it('取第 1 条走 todo add 表单：deadline 自动带邮件期限并写入 Vault', async () => {
+    await writeVaultMailStateEnd(vault, LAST_END.toISOString(), TODOS)
+    const asks = []
+    const ctx = todoCtx({ 'ml-type': 'deadline', 'ml-prio': 'urgent' }, asks)
+    const result = await runMailCommand(ctx, { session: sessionStub().session }, invocationOf(), { action: 'todo', n: 1 }, vault, mailSettings(), {})
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('(ml:deadline 2026-09-05 urgent) 回复周报')
+    expect(result.text).toContain('期限取自 mail read')
+    // 只问了类型+优先级一轮：邮件期限直接采用，没有日期轮
+    expect(asks).toHaveLength(1)
+    // 待办真实写入 Vault 日志
+    const files = (await readdir(vault)).filter((name) => name.endsWith('.md'))
+    const contents = await Promise.all(files.map((name) => readFile(join(vault, name), 'utf8')))
+    expect(contents.join('\n')).toContain('(ml:deadline 2026-09-05 urgent) 回复周报')
+  })
+
+  it('选 anytime → 不问日期直接写入（第 2 条）', async () => {
+    await writeVaultMailStateEnd(vault, LAST_END.toISOString(), TODOS)
+    const asks = []
+    const ctx = todoCtx({ 'ml-type': 'anytime', 'ml-prio': 'low' }, asks)
+    const result = await runMailCommand(ctx, { session: sessionStub().session }, invocationOf(), { action: 'todo', n: 2 }, vault, mailSettings(), {})
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('(ml:anytime low) 看新规范')
+    expect(asks).toHaveLength(1)
   })
 })
 

@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createMemoryleakToolDefinitions } from '../src/tools.js'
 import { resolveMemoryleakSettings } from '../src/settings-schema.js'
-import { readVaultMailStateEnd, writeVaultMailStateEnd } from '../src/vault.js'
+import { readVaultMailStateEnd, readVaultMailTodos, writeVaultMailStateEnd } from '../src/vault.js'
 /* ---------------- 桩与夹具 ---------------- */
 
 const at = (iso) => new Date(iso)
@@ -293,5 +293,52 @@ describe('memory_mail_fetch / memory_mail_commit（两段式读信）', () => {
     const rendered = tools.memory_mail_fetch.output.render({}, fetched)
     expect(rendered[0].text).toContain('窗口')
     expect(rendered[0].text).toContain('### 邮件 1')
+  })
+
+  it('fetch 分析要求带编号列表与 todos 提交指引（/ml mail todo 的数据来源）', async () => {
+    await writeVaultMailStateEnd(vault, LAST_END.toISOString())
+    const tools = toolsOf(mailDeps(MESSAGES, trackingTempFactory(tempRoot)))
+    const fetched = await tools.memory_mail_fetch.execute({}, exec)
+    expect(fetched.emails).toContain('编号列表')
+    expect(fetched.emails).toContain('todos 参数')
+    expect(fetched.emails).toContain('/ml mail todo <编号>')
+  })
+
+  it('commit 携带 todos → 清洗后存入 vault mailState（供 /ml mail todo 引用）', async () => {
+    await writeVaultMailStateEnd(vault, LAST_END.toISOString())
+    const temps = trackingTempFactory(tempRoot)
+    const tools = toolsOf(mailDeps(MESSAGES, temps))
+    await tools.memory_mail_fetch.execute({}, exec)
+    const committed = await tools.memory_mail_commit.execute(
+      {
+        todos: [
+          { text: '回复周报', due: '2026-09-05', from: 'boss@b.c', subject: '周报' },
+          { text: '看新规范', due: '下周三', from: '', subject: '' },
+          { text: '' },
+        ],
+      },
+      exec,
+    )
+    expect(committed.committedUntil).toContain('重要事项清单已记录 2 条')
+    const todos = await readVaultMailTodos(vault)
+    expect(todos).toHaveLength(2)
+    expect(todos[0]).toEqual({ text: '回复周报', due: '2026-09-05', from: 'boss@b.c', subject: '周报' })
+    expect(todos[1].due).toBe('') // 非法期限清空
+  })
+
+  it('commit 空数组 → 清空引用清单；不传 todos → 保留旧清单', async () => {
+    await writeVaultMailStateEnd(vault, LAST_END.toISOString(), [{ text: '旧待办', due: '', from: '', subject: '' }])
+    const temps = trackingTempFactory(tempRoot)
+    const tools = toolsOf(mailDeps(MESSAGES, temps))
+    await tools.memory_mail_fetch.execute({}, exec)
+    // 不传 todos：保留旧清单
+    await tools.memory_mail_commit.execute({}, exec)
+    expect(await readVaultMailTodos(vault)).toHaveLength(1)
+    // 再来一轮：fetch + commit 空数组 → 清空
+    await writeVaultMailStateEnd(vault, LAST_END.toISOString())
+    const tools2 = toolsOf(mailDeps(MESSAGES, trackingTempFactory(tempRoot)))
+    await tools2.memory_mail_fetch.execute({}, exec)
+    await tools2.memory_mail_commit.execute({ todos: [] }, exec)
+    expect(await readVaultMailTodos(vault)).toEqual([])
   })
 })

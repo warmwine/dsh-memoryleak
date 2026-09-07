@@ -186,6 +186,49 @@ export function hasTrustedCertificate(existing, pem) {
   return false
 }
 
+/* ---------------- 2.6 待办清单清洗（memory_mail_commit 提交的寻址清单） ---------------- */
+
+/** 单行清洗：去控制字符、压空白、限长（尾加省略号）。 */
+function clipLine(value, max) {
+  const flat = String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`
+}
+
+/**
+ * 清洗 memory_mail_commit 提交的待办清单（供 /ml mail todo <序号> 寻址）：
+ * 条数上限、text 必填、期限格式白名单、来源字段限长。不合规逐条告警。
+ *
+ * @param {unknown} raw 模型提交的 todos 参数
+ * @param {number} [max] 条数上限（默认 30）
+ * @returns {{ items: Array<{ text: string, due: string, from: string, subject: string }>, warnings: string[] }}
+ */
+export function sanitizeMailTodoItems(raw, max = 30) {
+  if (raw === undefined || raw === null) return { items: [], warnings: [] }
+  if (!Array.isArray(raw)) return { items: [], warnings: ['todos 不是数组，已忽略。'] }
+  const items = []
+  const warnings = []
+  for (const row of raw.slice(0, max)) {
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) continue
+    const text = clipLine(row.text, 200)
+    if (text === '') {
+      warnings.push('有一条待办缺 text，已丢弃。')
+      continue
+    }
+    const due = typeof row.due === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(row.due.trim()) ? row.due.trim() : ''
+    items.push({
+      text,
+      due,
+      from: clipLine(row.from, 120),
+      subject: clipLine(row.subject, 120),
+    })
+  }
+  if (raw.length > max) warnings.push(`待办超过 ${max} 条上限，只保留前 ${max} 条。`)
+  return { items, warnings }
+}
+
 /* ---------------- 3. prompt 组装 ---------------- */
 
 /**

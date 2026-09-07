@@ -29,6 +29,7 @@ import {
   resolveMailWindow,
   formatMailMoment,
   fitMailEmailsToBudget,
+  sanitizeMailTodoItems,
 } from './core/mail.js'
 import {
   MOMENTO_DIR,
@@ -355,7 +356,7 @@ export function createMemoryleakToolDefinitions({ scope, deps = {} }) {
             '',
             ...notes,
             '',
-            `分析要求：通读后向用户输出 markdown 阅读报告——**总评**（一句话整体重要程度与主题）、**重要事件**（按时间序列表）、**待办**（需要用户处理的事，明说期限的标注期限与来源）、**待阅**（不用动手但值得知道的内容）。只依据邮件内容，不要编造；全部报告完成后再调用 memory_mail_commit 推进读信进度。`,
+            `分析要求：通读后向用户输出 markdown 阅读报告——只有两段：**总评**（一句话整体重要程度与主题）+ **重要事项**（唯一的清单，编号列表 1. 2. 3. …：把所有重要的事务与信息都列上——需要用户动手处理的、需要跟进的、以及值得知道的重要信息；需要处理的条目标注期限（明说才是 yyyy-mm-dd）与来源发件人，按时间或重要性排序）。「重要事项」务必用编号列表。只依据邮件内容，不要编造。全部报告完成后调用 memory_mail_commit 推进读信进度，并通过它的 todos 参数把「重要事项」清单按编号顺序原样提交（每项 {text, due, from, subject}，due 只填报告里明说的 yyyy-mm-dd 期限；清单为空就给空数组）——用户会用 /ml mail todo <编号> 把任意一条转成待办。`,
           ].join('\n')
           return { windowLabel: `窗口 ${label}`, emails: emailsText }
         } finally {
@@ -365,12 +366,31 @@ export function createMemoryleakToolDefinitions({ scope, deps = {} }) {
       },
     },
 
-    /* ---------- /ml mail · 第二步：推进进度 ---------- */
+    /* ---------- /ml mail · 第二步：推进进度 + 记录重要事项清单 ---------- */
     {
       name: 'memory_mail_commit',
       description:
-        '推进 /ml mail 的读信进度到本次已分析的窗口末端。必须在 memory_mail_fetch 的邮件全部分析完成、报告输出之后调用；调用后下次 read 从这里继续（漏调用 = 下次重读同一批邮件，安全方向的失败）。',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
+        '推进 /ml mail 的读信进度到本次已分析的窗口末端，并把阅读报告「重要事项」清单存入 Vault 供 /ml mail todo <序号> 转成待办。必须在 memory_mail_fetch 的邮件全部分析完成、报告输出之后调用（todos 按报告「重要事项」编号顺序提交）；调用后下次 read 从这里继续（漏调用 = 下次重读同一批邮件，安全方向的失败）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          todos: {
+            type: 'array',
+            description: '阅读报告「重要事项」清单，与报告编号顺序一致（报告里没有重要事项就给空数组）。每项 {text, due, from, subject}。',
+            items: {
+              type: 'object',
+              required: ['text'],
+              properties: {
+                text: { type: 'string', description: '重要事项内容（与报告一致）。' },
+                due: { type: 'string', description: '期限 yyyy-mm-dd（报告未标注给空串）。' },
+                from: { type: 'string', description: '相关发件人（可空串）。' },
+                subject: { type: 'string', description: '相关邮件主题（可空串）。' },
+              },
+            },
+          },
+        },
+        additionalProperties: false,
+      },
       output: {
         schema: {
           type: 'object',
@@ -382,7 +402,7 @@ export function createMemoryleakToolDefinitions({ scope, deps = {} }) {
         },
         render: (_args, value) => [{ type: 'text', text: value.committedUntil }],
       },
-      async execute(_args, exec) {
+      async execute(args, exec) {
         const env = await resolveToolEnv(scope)
         if (env.error !== undefined) return { committedUntil: env.error }
         const { vaultDir } = env
@@ -391,9 +411,19 @@ export function createMemoryleakToolDefinitions({ scope, deps = {} }) {
         if (pending === undefined) {
           return { committedUntil: '没有待提交的读信窗口——先调用 memory_mail_fetch 获取邮件。' }
         }
-        await writeMailState(vaultDir, pending.end)
+        // 待办清单：提交了就清洗存盘（空数组 = 本批无待办，覆盖旧清单）；
+        // 没提交就不动旧清单（模型忘传不抹掉上一次的可寻址列表）。
+        let todos = null
+        let todosNote = ''
+        if (args !== null && typeof args === 'object' && 'todos' in args) {
+          const { items, warnings } = sanitizeMailTodoItems(args.todos)
+          todos = items
+          todosNote = items.length > 0 ? `重要事项清单已记录 ${items.length} 条（/ml mail todo <序号> 可把任意一条转成待办）。` : '本批没有重要事项，已清空引用清单。'
+          if (warnings.length > 0) todosNote += '\n' + warnings.map((warning) => `- ${warning}`).join('\n')
+        }
+        await writeMailState(vaultDir, pending.end, todos)
         pendingMailWindow.delete(key)
-        return { committedUntil: `读信进度已推进到 ${formatMailMoment(pending.end)}（窗口：${pending.label}）。下次 read 从这里继续。` }
+        return { committedUntil: `读信进度已推进到 ${formatMailMoment(pending.end)}（窗口：${pending.label}）。下次 read 从这里继续。${todosNote === '' ? '' : '\n' + todosNote}` }
       },
     },
   ]

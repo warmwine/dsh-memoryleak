@@ -893,7 +893,7 @@ describe('persistNoteResult / runNoteCommand（端到端落盘）', () => {
     expect(followups).toHaveLength(1)
     const handoff = followups[0]
     expect(handoff.role).toBe('user')
-    expect(handoff.source).toEqual({ kind: 'user' })
+    expect(handoff.source).toEqual({ kind: 'plugin', plugin: 'dsh-memoryleak', form: 'notice' })
     expect(typeof handoff.id).toBe('string')
     const text = handoff.content[0].text
     expect(text).toContain('📌 /ml note 整理任务')

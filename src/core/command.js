@@ -25,7 +25,7 @@ import { TodoUsageError } from './errors.js'
 import { TODO_STATUSES } from './filter.js'
 import { MAX_POSTPONE_DAYS } from './formats/memoryleak-todo.js'
 
-export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done|cancelled] [关键词] · /ml todo d <序号> · /ml todo c <序号> · /ml todo p <序号> [天数] · /ml todo u · /ml note · /ml ask <问题> · /ml mail [read|setup] · /ml view [文件名片段] · /ml help'
+export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /ml todo list [all|open|done|cancelled] [关键词] · /ml todo d <序号> · /ml todo c <序号> · /ml todo p <序号> [天数] · /ml todo u · /ml note · /ml ask <问题> · /ml mail [read|todo <序号>|setup] · /ml view [文件名片段] · /ml help'
 
 /**
  * 三个花 token 命令的消息标记（同步维护于 README / help / 测试）：
@@ -35,6 +35,13 @@ export const ML_USAGE = '/ml init · /ml <文本> · /ml todo add <文本> · /m
 export const NOTE_MARK = '📌 /ml note'
 export const ASK_MARK = '❓ /ml ask'
 export const MAIL_MARK = '📬 /ml mail'
+
+/**
+ * 交接消息的统一 source：`kind: 'plugin'`（非 user）让 UI 把它渲染成折叠
+ * 的「注入上下文」行（notice 形态收起时显示第一行摘要），而不是撑开一整
+ * 个用户气泡——指令照常进模型上下文，对话框里只留一行。
+ */
+export const HANDOFF_SOURCE = Object.freeze({ kind: 'plugin', plugin: 'dsh-memoryleak', form: 'notice' })
 
 /**
  * @param {string} rawInput 命令名（/ml）之后的原文（含分隔空白）
@@ -49,7 +56,7 @@ export const MAIL_MARK = '📬 /ml mail'
  * } | {
  *   family: 'ask', text: string
  * } | {
- *   family: 'mail', action: 'read' | 'setup' | null
+ *   family: 'mail', action: 'read' | 'setup' | 'todo' | null, n?: number
  * } | {
  *   family: 'view', text: string | null
  * } | {
@@ -113,7 +120,16 @@ export function parseMlArgs(rawInput) {
       if (rest.length > 0) throw new TodoUsageError('用法：/ml mail setup（不带参数；重新走一遍邮箱配置问答）')
       return { family: 'mail', action: 'setup' }
     }
-    throw new TodoUsageError(['未知操作 "' + action + '"。/ml mail 的子命令：', '· /ml mail —— 邮箱状态（未配置时进入设置引导）', '· /ml mail read —— 增量阅读新邮件并提取待办/待阅（花 token）', '· /ml mail setup —— 重新配置邮箱账号'].join('\n'))
+    if (action === 'todo') {
+      const token = rest[0]
+      const n = token !== undefined && /^\d+$/.test(token) ? Number(token) : NaN
+      if (!Number.isInteger(n) || n < 1) {
+        throw new TodoUsageError('用法：/ml mail todo <序号>（序号来自最近一次 /ml mail read 报告的「重要事项」编号）')
+      }
+      if (rest.length > 1) throw new TodoUsageError('用法：/ml mail todo <序号>（只接受一个序号参数）')
+      return { family: 'mail', action: 'todo', n }
+    }
+    throw new TodoUsageError(['未知操作 "' + action + '"。/ml mail 的子命令：', '· /ml mail —— 邮箱状态（未配置时进入设置引导）', '· /ml mail read —— 增量阅读新邮件并提取重要事项（花 token）', '· /ml mail todo <序号> —— 把上次 read 报告的第 <序号> 条重要事项转成待办', '· /ml mail setup —— 重新配置邮箱账号'].join('\n'))
   }
   if (family !== 'todo') {
     return { family: 'journal', text: tokens.join(' ') }
@@ -221,8 +237,13 @@ export function renderMlHelp() {
     '/ml mail read',
     '  增量阅读邮件：只下载「上次 read 结束 → 现在」的新邮件（首次默认当天）',
     '  到系统临时目录（绝不写进 Vault 或工作区，用完即删；下载与清理全程',
-    '  无模型调用），再由当前模型分析并提取重要事件 / 待办 / 待阅事项。',
+    '  无模型调用），再由当前模型分析并输出重要事项编号清单（所有重要的',
+    '  事务与信息都在清单里，需要处理的标注期限与来源）。',
     '  分析完成、报告输出之后才推进读信进度，下次从这里继续',
+    '/ml mail todo <序号>',
+    '  把最近一次 mail read 报告「重要事项」清单的第 <序号> 条转成待办：',
+    '  走与 /ml todo add 完全相同的表单（类型/优先级），条目里明说期限的',
+    '  选 deadline 时自动带入选中的期限',
     '/ml mail setup',
     '  重新走一遍邮箱配置问答（改密码 / 换服务器也用它；配置也可在 GUI',
     '  设置 → MemoryLeak 中填写）',

@@ -65,6 +65,7 @@ describe('parseMlArgs（/ml 文法）', () => {
         '/ml ask <问题>',
         '/ml mail',
         '/ml mail read',
+        '/ml mail todo <序号>',
         '/ml mail setup',
         '/ml view',
         '/ml v',
@@ -74,7 +75,7 @@ describe('parseMlArgs（/ml 文法）', () => {
       }
       // 帮助里不该出现未实现的命令
       expect(help).not.toMatch(/\/ml todo (?!add|list|n|a|l|d|u|c|p|done|undo|cancel|postpone)\w+/)
-      expect(help).not.toMatch(/\/ml mail (?!read|setup)\w+/)
+      expect(help).not.toMatch(/\/ml mail (?!read|todo|setup)\w+/)
     })
 
     it('init：严格无参数（Vault 设置的唯一入口）', () => {
@@ -112,11 +113,18 @@ describe('parseMlArgs（/ml 文法）', () => {
       expect(parseMlArgs('asking about vault')).toEqual({ family: 'journal', text: 'asking about vault' })
     })
 
-    it('mail：裸命令 / read / setup；未知操作与多余参数报用法', () => {
+    it('mail：裸命令 / read / todo / setup；未知操作与多余参数报用法', () => {
       expect(parseMlArgs('mail')).toEqual({ family: 'mail', action: null })
       expect(parseMlArgs('  mail  ')).toEqual({ family: 'mail', action: null })
       expect(parseMlArgs('mail read')).toEqual({ family: 'mail', action: 'read' })
       expect(parseMlArgs('mail setup')).toEqual({ family: 'mail', action: 'setup' })
+      expect(parseMlArgs('mail todo 2')).toEqual({ family: 'mail', action: 'todo', n: 2 })
+      expect(parseMlArgs('mail todo 12')).toEqual({ family: 'mail', action: 'todo', n: 12 })
+      expect(() => parseMlArgs('mail todo')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('mail todo')).toThrow(/序号/)
+      expect(() => parseMlArgs('mail todo x')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('mail todo 0')).toThrow(TodoUsageError)
+      expect(() => parseMlArgs('mail todo 2 3')).toThrow(/只接受一个序号/)
       expect(() => parseMlArgs('mail send')).toThrow(TodoUsageError)
       expect(() => parseMlArgs('mail send')).toThrow(/未知操作/)
       expect(() => parseMlArgs('mail read today')).toThrow(/不带参数/)
@@ -168,7 +176,7 @@ describe('parseMlArgs（/ml 文法）', () => {
   })
 
   it('用法文案覆盖全部入口', () => {
-    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo c', '/ml todo p', '/ml todo u', '/ml note', '/ml mail [read|setup]', '/ml view', '/ml help']) {
+    for (const fragment of ['/ml <文本>', '/ml todo add', '/ml todo list', '/ml todo d', '/ml todo c', '/ml todo p', '/ml todo u', '/ml note', '/ml mail [read|todo <序号>|setup]', '/ml view', '/ml help']) {
       expect(ML_USAGE).toContain(fragment)
     }
   })

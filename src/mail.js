@@ -27,9 +27,10 @@ import {
   selectMailEmails,
   formatMailMoment,
 } from './core/mail.js'
-import { readVaultMailStateEnd, writeVaultMailStateEnd } from './vault.js'
+import { readVaultMailStateEnd, readVaultMailTodos, writeVaultMailStateEnd } from './vault.js'
 import { MEMORYLEAK_SETTINGS_NAMESPACE } from './settings-schema.js'
-import { MAIL_MARK } from './core/command.js'
+import { MAIL_MARK, HANDOFF_SOURCE } from './core/command.js'
+import { runTodoAddFlow } from './todo-add.js'
 
 export { MAIL_MARK }
 
@@ -417,7 +418,7 @@ export async function parseEmailFiles(dir, emails, deps = {}) {
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {object} agent
  * @param {{ commandId: string, signal: AbortSignal }} invocation
- * @param {{ action: 'read' | 'setup' | null }} parsed
+ * @param {{ action: 'read' | 'setup' | 'todo' | null, n?: number }} parsed
  * @param {string} vaultDir vault 绝对路径（门控已保证非空）
  * @param {object} settings 生效设置段
  * @param {object} [deps] 测试注入（createClient / parseEml / makeTempDir / sweep / now）
@@ -428,6 +429,10 @@ export async function runMailCommand(ctx, agent, invocation, parsed, vaultDir, s
   if (parsed.action === 'read') {
     if (!isMailConfigured(settings)) return runMailSetupFlow(ctx, agent, invocation.signal, settings, deps, '邮箱还没配置——先完成设置，再读邮件。')
     return runMailReadCommand(ctx, agent, invocation, vaultDir, settings, deps)
+  }
+  if (parsed.action === 'todo') {
+    // 不需要邮箱在线：引用的是上一次 read 存进 Vault 的待办清单
+    return runMailTodoAddCommand(ctx, agent, invocation.signal, parsed.n, vaultDir, settings)
   }
   if (!isMailConfigured(settings)) return runMailSetupFlow(ctx, agent, invocation.signal, settings, deps)
   return runMailStatusCommand(vaultDir, settings)
@@ -445,6 +450,7 @@ async function runMailStatusCommand(vaultDir, settings) {
     `· 上次读完：${lastEnd === null ? '还没读过（首次 read 默认当天）' : `${formatMailMoment(new Date(lastEnd))}（下次从这里继续）`}`,
     '',
     '· /ml mail read —— 增量阅读新邮件并提取待办/待阅（花 token）',
+    '· /ml mail todo <序号> —— 把上次报告「重要事项」的第 <序号> 条转成待办',
     '· /ml mail setup —— 重新配置；完整选项在 GUI 设置 → MemoryLeak',
   ]
   return { kind: 'success', text: lines.join('\n') }
@@ -608,19 +614,18 @@ export async function runMailReadCommand(_ctx, agent, _invocation, vaultDir, set
   if (typeof agent?.followup !== 'function') {
     return { kind: 'error', text: '当前环境不支持把任务交给模型（缺少 agent.followup 通道），无法执行 /ml mail read。' }
   }
+  // 交接消息只携带动态事实（窗口）；报告格式与 todos 提交要求都在
+  // memory_mail_fetch 的结果文本里随邮件带出。source 用 plugin——UI 渲染成
+  // 折叠的「注入上下文」行，不再撑开一整个用户气泡。
   const handoff = [
     `${MAIL_MARK} 读信任务（窗口：${label}）`,
-    '请阅读工作邮箱的新邮件并向用户输出阅读报告：',
-    '',
-    '1. 调用 memory_mail_fetch 工具：增量下载并解析「上次读完 → 现在」的新邮件（纯文本、附件不下载；临时目录即用即删，全程零模型调用）。窗口内没有新邮件时工具会直接说明——届时用一句话告知用户即可。',
-    '2. 通读拿到的邮件，输出 markdown 阅读报告：**总评**（一句话整体重要程度与主题）、**重要事件**（按时间序列表）、**待办**（需要用户处理的事，明说期限的标注期限与来源）、**待阅**（不用动手但值得知道的内容）。只依据邮件内容，不要编造。',
-    '3. 报告输出之后，调用 memory_mail_commit 工具推进读信进度（漏调 = 下次重读同一批邮件）。',
+    '请阅读工作邮箱的新邮件并向用户输出阅读报告：调 memory_mail_fetch 获取邮件（没有新邮件就一句话告知），按其结果里的分析要求输出 markdown 报告，最后调 memory_mail_commit 推进进度并提交报告待办（漏调 = 下次重读同一批）。',
   ].join('\n')
   agent.followup({
     id: crypto.randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: handoff }],
-    source: { kind: 'user' },
+    source: HANDOFF_SOURCE,
   })
   return {
     kind: 'success',
@@ -628,11 +633,37 @@ export async function runMailReadCommand(_ctx, agent, _invocation, vaultDir, set
   }
 }
 
-/** 写读信进度（失败转 MailStateIoError——进度写不进就不推进，宁可重复读）。 */
-export async function writeMailState(vaultDir, end) {
+/** 写读信状态（进度 + 可选重要事项清单；失败转 MailStateIoError——写不进就不推进，宁可重复读）。 */
+export async function writeMailState(vaultDir, end, items = null) {
   try {
-    await writeVaultMailStateEnd(vaultDir, end.toISOString())
+    await writeVaultMailStateEnd(vaultDir, end.toISOString(), items)
   } catch (error) {
     throw new MailStateIoError(`记录读信进度失败（下次 read 会重复这个窗口）：${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+/**
+ * /ml mail todo <序号>：取最近一次 mail read 报告「重要事项」清单的第 n 条，
+ * 走与 /ml todo add 完全相同的表单写入 Vault 待办（条目里明说期限的，
+ * 选 deadline 时自动采用该期限，不再问日期）。信息类条目同样可转——
+ * 转不成待办是 0.16.1 之前最大的尴尬。
+ */
+async function runMailTodoAddCommand(ctx, agent, signal, n, vaultDir, settings) {
+  const todos = await readVaultMailTodos(vaultDir)
+  if (todos.length === 0) {
+    return { kind: 'error', text: '还没有可引用的 mail read 重要事项清单——先执行 /ml mail read，再试。' }
+  }
+  if (n > todos.length) {
+    return { kind: 'error', text: `序号超出范围：最近一次 mail read 共 ${todos.length} 条重要事项（收到 ${n}）。` }
+  }
+  const item = todos[n - 1]
+  return runTodoAddFlow({
+    ctx,
+    agent,
+    signal,
+    cwd: vaultDir,
+    settings,
+    text: item.text,
+    presetDate: item.due !== '' ? item.due : null,
+  })
 }
