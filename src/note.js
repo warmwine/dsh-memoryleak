@@ -71,6 +71,17 @@ function hasMlMark(text) {
 
 /* ---------------- 1. 区间定位与投影（本地检查 + 边界） ---------------- */
 
+/**
+ * 读会话事件日志：dsh 0.1.2 起 session.events 属性取消（日志私有化），
+ * 读取走 session.snapshotEvents()（冻结副本，只读扫描正合适）；旧环境
+ * 回退 .events 数组；都不可用按空日志处理（命令报「没有可整理内容」，
+ * 不再像 session.events.findIndex 一样崩溃）。
+ */
+function sessionEventsOf(session) {
+  if (typeof session?.snapshotEvents === 'function') return session.snapshotEvents()
+  return Array.isArray(session?.events) ? session.events : []
+}
+
 /** command/run 是不是一次 /ml note 调用（args 为空或以 note 开头）。 */
 function isNoteRun(event) {
   if (event.type !== 'command/run') return false
@@ -110,12 +121,12 @@ function lastSuccessfulNoteWriteSeq(events) {
  *   2. 否则旧版边界：回扫上一个成功收尾的 /ml note 命令对（升级前的会话）。
  * 失败、取消的整理不构成边界——身前对话留给下次重试。
  *
- * @param {{ events: ReadonlyArray<object>, seq?: number }} session 会话（用 events 与 surface 折叠）
+ * @param {{ events?: ReadonlyArray<object>, snapshotEvents?: () => ReadonlyArray<object>, seq?: number }} session 会话（读事件日志 + surface 折叠）
  * @param {string | number} currentCommandId 当前 /ml note 的 commandId（其 command/run 已在日志中）
  * @returns {{ items: Array<{ role: 'user'|'assistant'|'tool', name?: string, text: string }>, hasBoundary: boolean, fromSeq: number, toSeq: number }}
  */
 export function collectNoteItems(session, currentCommandId) {
-  const events = session.events
+  const events = sessionEventsOf(session)
   const currentIndex = events.findIndex(
     (event) => event.type === 'command/run' && event.data?.commandId === currentCommandId,
   )
